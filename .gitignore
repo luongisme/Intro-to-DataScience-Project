@@ -1,4 +1,6 @@
+# =========================
 # Python
+# =========================
 __pycache__/
 *.py[cod]
 
@@ -9,19 +11,37 @@ venv/
 # Environment variables
 .env
 
+# =========================
 # Jupyter
+# =========================
 .ipynb_checkpoints/
 
-# VS Code
+# =========================
+# IDE
+# =========================
 .vscode/
-
-# PyCharm
 .idea/
 
+# =========================
+# Data
+# =========================
+
+# Raw data: downloaded separately, never commit
+data/raw/*
+!data/raw/.gitkeep
+
+# Intermediate data: generated from raw data
+data/interim/*
+!data/interim/.gitkeep
+
+# =========================
 # OS
+# =========================
 .DS_Store
 Thumbs.db
 
+# =========================
 # Temporary files
+# =========================
 *.tmp
 *.temp
