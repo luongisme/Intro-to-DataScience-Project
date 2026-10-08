@@ -27,7 +27,7 @@ def load_data(name):
 
     if not path.exists():
         raise FileNotFoundError(
-            f"Dataset not found: {path}\n"
+            f"Dataset not found: '{DATASETS[name]}' searched in folder '{RAW_DIR}'.\n"
             "Please place the required file in data/raw/."
         )
 
