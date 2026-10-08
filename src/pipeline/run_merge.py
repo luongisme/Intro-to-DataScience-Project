@@ -41,11 +41,18 @@ def _load_and_prepare(spec: TableLoadSpec) -> pd.DataFrame:
         ValueError: If columns are missing or date parsing fails.
     """
     logger.info("Loading table '%s'...", spec.dataset_name)
-    df = load_data(
-        name=spec.dataset_name,
-        usecols=spec.usecols,
-        dtype=spec.dtypes,
-    )
+    try:
+        df = load_data(
+            name=spec.dataset_name,
+            usecols=spec.usecols,
+            dtype=spec.dtypes,
+        )
+    except ValueError as err:
+        if "Usecols do not match columns" in str(err):
+            raise ValueError(
+                f"Table '{spec.dataset_name}' missing expected columns from CSV. {err}"
+            ) from err
+        raise
 
     missing_expected = set(spec.usecols) - set(df.columns)
     if missing_expected:
