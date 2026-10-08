@@ -3,9 +3,12 @@
 import logging
 import sys
 from pathlib import Path
+from typing import List
 import pandas as pd
 
 from src.data_loader import load_data
+from src.paths import PROCESSED_DIR
+from src.pipeline.merger import OlistDataMerger
 from src.pipeline.schema import (
     CUSTOMERS_SPEC,
     ORDER_ITEMS_SPEC,
@@ -14,6 +17,7 @@ from src.pipeline.schema import (
     SELLERS_SPEC,
     TableLoadSpec,
 )
+from src.pipeline.validator import MergeValidator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,3 +86,45 @@ def save_merged_dataset(merged_df: pd.DataFrame, output_dir: Path) -> Path:
         )
         merged_df.to_csv(csv_path, index=False)
         return csv_path
+
+def run_pipeline() -> pd.DataFrame:
+    """Execute end-to-end data merge pipeline."""
+    logger.info("========== STARTING OLIST MERGE PIPELINE ==========")
+
+    # 1. Load and parse 5 tables
+    order_items = _load_and_prepare(ORDER_ITEMS_SPEC)
+    orders = _load_and_prepare(ORDERS_SPEC)
+    customers = _load_and_prepare(CUSTOMERS_SPEC)
+    products = _load_and_prepare(PRODUCTS_SPEC)
+    sellers = _load_and_prepare(SELLERS_SPEC)
+
+    # 2. Merge tables
+    merger = OlistDataMerger()
+    merged_df = merger.merge_tables(
+        order_items=order_items,
+        orders=orders,
+        customers=customers,
+        products=products,
+        sellers=sellers,
+    )
+
+    # 3. Validate
+    validator = MergeValidator()
+    validator.validate_hard_rules(
+        merged_df=merged_df,
+        base_order_items=order_items,
+        orders=orders,
+        products=products,
+        sellers=sellers,
+    )
+    validator.run_soft_checks(merged_df=merged_df)
+
+    # 4. Save
+    save_merged_dataset(merged_df, PROCESSED_DIR)
+
+    logger.info("========== PIPELINE COMPLETED SUCCESSFULLY ==========")
+    return merged_df
+
+
+if __name__ == "__main__":
+    run_pipeline()
