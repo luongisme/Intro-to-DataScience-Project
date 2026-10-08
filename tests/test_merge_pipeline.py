@@ -291,3 +291,22 @@ def test_deterministic(
         synthetic_sellers,
     )
     pd.testing.assert_frame_equal(run1, run2)
+
+
+# 13. Integration test on real raw CSV files (skipped if files absent)
+REAL_FILES_PRESENT = all(
+    (RAW_DIR / DATASETS[k]).exists()
+    for k in ["order_items", "orders", "customers", "products", "sellers"]
+)
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not REAL_FILES_PRESENT,
+    reason="Real Olist CSV files not present in data/raw/",
+)
+def test_integration_pipeline_on_real_files():
+    merged_df = run_pipeline()
+    assert len(merged_df) == 112650
+    assert len(merged_df.columns) == 25
+    assert list(merged_df.columns) == EXPECTED_FINAL_COLUMNS
