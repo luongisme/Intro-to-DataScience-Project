@@ -1,9 +1,14 @@
 """Comprehensive Unit & Integration tests for Olist Merge Pipeline."""
 
+from pathlib import Path
+import numpy as np
 import pandas as pd
 import pytest
 
+from src.paths import RAW_DIR
+from src.data_loader import DATASETS, load_data
 from src.pipeline.merger import OlistDataMerger
+from src.pipeline.run_merge import _load_and_prepare, run_pipeline
 from src.pipeline.schema import (
     EXPECTED_FINAL_COLUMNS,
     ORDER_ITEMS_SPEC,
@@ -153,3 +158,136 @@ def test_no_suffix_columns(
         synthetic_sellers,
     )
     assert not any(c.endswith("_x") or c.endswith("_y") for c in merged.columns)
+
+
+# 7. Datetime parsing: valid parsed, empty string -> NaT, malformed -> raise
+def test_datetime_parsing():
+    valid_series = pd.Series(["2017-02-01 08:00:00", "2018-05-10 12:30:00"])
+    parsed = pd.to_datetime(valid_series, errors="raise")
+    assert pd.api.types.is_datetime64_any_dtype(parsed)
+
+    empty_series = pd.Series(["", None, np.nan])
+    parsed_empty = pd.to_datetime(empty_series, errors="raise")
+    assert parsed_empty.isna().all()
+
+    malformed_series = pd.Series(["2017-02-01", "not_a_valid_date"])
+    with pytest.raises(Exception):
+        pd.to_datetime(malformed_series, errors="raise")
+
+
+# 8. Zip code leading zero preserved as string
+def test_zip_code_leading_zero_preserved(tmp_path):
+    csv_file = tmp_path / "zip_test.csv"
+    csv_file.write_text("customer_id,customer_zip_code_prefix\nC1,01310\nC2,04571\n")
+    df = pd.read_csv(csv_file, dtype={"customer_zip_code_prefix": "string"})
+    assert df["customer_zip_code_prefix"].iloc[0] == "01310"
+    assert df["customer_zip_code_prefix"].dtype == "string"
+
+
+# 9a. Missing file raises clear FileNotFoundError naming file and folder
+def test_missing_file_raises_clear_error(monkeypatch, tmp_path):
+    monkeypatch.setattr("src.data_loader.RAW_DIR", tmp_path)
+    with pytest.raises(FileNotFoundError) as exc_info:
+        load_data("order_items")
+    error_msg = str(exc_info.value)
+    assert "olist_order_items_dataset.csv" in error_msg
+    assert str(tmp_path) in error_msg
+
+
+# 9b. Missing expected column raises clear ValueError listing missing columns
+def test_missing_column_raises_clear_error(monkeypatch, tmp_path):
+    monkeypatch.setattr("src.data_loader.RAW_DIR", tmp_path)
+    csv_file = tmp_path / "olist_order_items_dataset.csv"
+    # Write CSV missing 'price' and 'freight_value'
+    csv_file.write_text(
+        "order_id,order_item_id,product_id,seller_id,shipping_limit_date\n"
+        "O1,1,P1,S1,2017-02-05 10:00:00\n"
+    )
+    with pytest.raises(ValueError) as exc_info:
+        _load_and_prepare(ORDER_ITEMS_SPEC)
+    assert "missing expected columns" in str(exc_info.value)
+
+
+# 10. Validation catches broken merge (e.g. duplicated rows)
+def test_validation_catches_broken_merge(
+    synthetic_order_items,
+    synthetic_orders,
+    synthetic_customers,
+    synthetic_products,
+    synthetic_sellers,
+):
+    merger = OlistDataMerger()
+    merged = merger.merge_tables(
+        synthetic_order_items,
+        synthetic_orders,
+        synthetic_customers,
+        synthetic_products,
+        synthetic_sellers,
+    )
+    # Deliberately duplicate a row
+    broken_merged = pd.concat([merged, merged.iloc[[0]]], ignore_index=True)
+    validator = MergeValidator()
+    with pytest.raises(ValueError, match="Row count changed"):
+        validator.validate_hard_rules(
+            broken_merged,
+            synthetic_order_items,
+            synthetic_orders,
+            synthetic_products,
+            synthetic_sellers,
+        )
+
+
+# 11. Input DataFrames are not mutated
+def test_inputs_not_mutated(
+    synthetic_order_items,
+    synthetic_orders,
+    synthetic_customers,
+    synthetic_products,
+    synthetic_sellers,
+):
+    items_copy = synthetic_order_items.copy(deep=True)
+    orders_copy = synthetic_orders.copy(deep=True)
+    customers_copy = synthetic_customers.copy(deep=True)
+    products_copy = synthetic_products.copy(deep=True)
+    sellers_copy = synthetic_sellers.copy(deep=True)
+
+    merger = OlistDataMerger()
+    _ = merger.merge_tables(
+        synthetic_order_items,
+        synthetic_orders,
+        synthetic_customers,
+        synthetic_products,
+        synthetic_sellers,
+    )
+
+    pd.testing.assert_frame_equal(synthetic_order_items, items_copy)
+    pd.testing.assert_frame_equal(synthetic_orders, orders_copy)
+    pd.testing.assert_frame_equal(synthetic_customers, customers_copy)
+    pd.testing.assert_frame_equal(synthetic_products, products_copy)
+    pd.testing.assert_frame_equal(synthetic_sellers, sellers_copy)
+
+
+# 12. Deterministic execution
+def test_deterministic(
+    synthetic_order_items,
+    synthetic_orders,
+    synthetic_customers,
+    synthetic_products,
+    synthetic_sellers,
+):
+    merger = OlistDataMerger()
+    run1 = merger.merge_tables(
+        synthetic_order_items,
+        synthetic_orders,
+        synthetic_customers,
+        synthetic_products,
+        synthetic_sellers,
+    )
+    run2 = merger.merge_tables(
+        synthetic_order_items,
+        synthetic_orders,
+        synthetic_customers,
+        synthetic_products,
+        synthetic_sellers,
+    )
+    pd.testing.assert_frame_equal(run1, run2)
