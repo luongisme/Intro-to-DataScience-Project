@@ -1,9 +1,11 @@
+from typing import Any, Dict
+from pathlib import Path
 import pandas as pd
 
 from src.paths import RAW_DIR
 
 
-DATASETS = {
+DATASETS: Dict[str, str] = {
     "customers": "olist_customers_dataset.csv",
     "geolocation": "olist_geolocation_dataset.csv",
     "order_items": "olist_order_items_dataset.csv",
@@ -16,14 +18,27 @@ DATASETS = {
 }
 
 
-def load_data(name):
+def load_data(name: str, **kwargs: Any) -> pd.DataFrame:
+    """Load an Olist dataset from data/raw/ by registered key.
+
+    Args:
+        name: The key corresponding to the dataset in DATASETS.
+        **kwargs: Additional parameters forwarded to pd.read_csv (e.g. usecols, dtype).
+
+    Returns:
+        pd.DataFrame: Loaded DataFrame.
+
+    Raises:
+        ValueError: If dataset name is not registered.
+        FileNotFoundError: If the CSV file does not exist in data/raw/.
+    """
     if name not in DATASETS:
         raise ValueError(
             f"Unknown dataset '{name}'. "
             f"Available datasets: {list(DATASETS.keys())}"
         )
 
-    path = RAW_DIR / DATASETS[name]
+    path: Path = RAW_DIR / DATASETS[name]
 
     if not path.exists():
         raise FileNotFoundError(
@@ -31,9 +46,10 @@ def load_data(name):
             "Please place the required file in data/raw/."
         )
 
-    return pd.read_csv(path)
+    return pd.read_csv(path, **kwargs)
 
 def load_all():
+    """Load all registered datasets with default pandas settings."""
     return {
         name: load_data(name)
         for name in DATASETS
