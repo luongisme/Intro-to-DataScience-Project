@@ -96,4 +96,35 @@ class MergeValidator:
                 f"Hard check failed: Output contains suffix columns: {suffix_cols}."
             )
 
-        logger.info("All 6 HARD checks passed successfully.")
+        # Hard Check 7: Orphan checks
+        # 7a. order_id vs orders
+        items_order_ids: Set[str] = set(base_order_items["order_id"])
+        valid_order_ids: Set[str] = set(orders["order_id"])
+        orphan_orders = items_order_ids - valid_order_ids
+        if orphan_orders:
+            raise ValueError(
+                f"Hard check failed: {len(orphan_orders)} orphan order_id(s) found in order_items "
+                "that do not exist in orders."
+            )
+
+        # 7b. product_id vs products
+        items_product_ids: Set[str] = set(base_order_items["product_id"])
+        valid_product_ids: Set[str] = set(products["product_id"])
+        orphan_products = items_product_ids - valid_product_ids
+        if orphan_products:
+            raise ValueError(
+                f"Hard check failed: {len(orphan_products)} orphan product_id(s) found in order_items "
+                "that do not exist in products."
+            )
+
+        # 7c. seller_id vs sellers
+        items_seller_ids: Set[str] = set(base_order_items["seller_id"])
+        valid_seller_ids: Set[str] = set(sellers["seller_id"])
+        orphan_sellers = items_seller_ids - valid_seller_ids
+        if orphan_sellers:
+            raise ValueError(
+                f"Hard check failed: {len(orphan_sellers)} orphan seller_id(s) found in order_items "
+                "that do not exist in sellers."
+            )
+
+        logger.info("All 7 HARD checks passed successfully.")
