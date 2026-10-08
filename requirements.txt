@@ -9,3 +9,6 @@ scipy==1.18.1
 
 # --- Data Visualization ---
 matplotlib==3.11.2
+
+# --- Storage Engine ---
+pyarrow==19.0.0
