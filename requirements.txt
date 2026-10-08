@@ -12,3 +12,6 @@ matplotlib==3.11.2
 
 # --- Storage Engine ---
 pyarrow==19.0.0
+
+# --- Testing Framework ---
+pytest==8.3.4
