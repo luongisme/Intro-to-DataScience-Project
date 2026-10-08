@@ -121,3 +121,57 @@ SELLERS_SPEC = TableLoadSpec(
     },
     date_columns=[],
 )
+
+# Exact 25 columns required in final output in order
+EXPECTED_FINAL_COLUMNS: List[str] = [
+    "order_id",
+    "order_item_id",
+    "product_id",
+    "seller_id",
+    "shipping_limit_date",
+    "price",
+    "freight_value",
+    "customer_id",
+    "order_status",
+    "order_purchase_timestamp",
+    "order_approved_at",
+    "order_delivered_carrier_date",
+    "order_delivered_customer_date",
+    "order_estimated_delivery_date",
+    "customer_zip_code_prefix",
+    "customer_city",
+    "customer_state",
+    "product_category_name",
+    "product_weight_g",
+    "product_length_cm",
+    "product_height_cm",
+    "product_width_cm",
+    "seller_zip_code_prefix",
+    "seller_city",
+    "seller_state",
+]
+
+# Validation contract constants
+MANDATORY_NON_NULL_COLUMNS: List[str] = [
+    "order_id",
+    "order_item_id",
+    "product_id",
+    "seller_id",
+    "customer_id",
+]
+
+ALL_TIMESTAMP_COLUMNS: List[str] = [
+    "shipping_limit_date",
+    "order_purchase_timestamp",
+    "order_approved_at",
+    "order_delivered_carrier_date",
+    "order_delivered_customer_date",
+    "order_estimated_delivery_date",
+]
+
+ZIP_COLUMNS: List[str] = [
+    "customer_zip_code_prefix",
+    "seller_zip_code_prefix",
+]
+
+BENCHMARK_ROW_COUNT: int = 112650
