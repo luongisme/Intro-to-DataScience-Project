@@ -2,6 +2,7 @@
 
 import logging
 import sys
+from pathlib import Path
 import pandas as pd
 
 from src.data_loader import load_data
@@ -54,3 +55,30 @@ def _load_and_prepare(spec: TableLoadSpec) -> pd.DataFrame:
 
     logger.info("Loaded '%s' with shape %s", spec.dataset_name, df.shape)
     return df
+
+def save_merged_dataset(merged_df: pd.DataFrame, output_dir: Path) -> Path:
+    """Save DataFrame to processed folder as Parquet with CSV fallback.
+
+    Args:
+        merged_df: Merged output DataFrame.
+        output_dir: Destination directory (PROCESSED_DIR).
+
+    Returns:
+        Path: Path to saved file.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = output_dir / "merged_order_items.parquet"
+
+    try:
+        merged_df.to_parquet(parquet_path, index=False, engine="pyarrow")
+        logger.info("Successfully saved output as Parquet to: %s", parquet_path)
+        return parquet_path
+    except (ImportError, ModuleNotFoundError) as err:
+        csv_path = output_dir / "merged_order_items.csv"
+        logger.warning(
+            "pyarrow engine not available (%s). Falling back to CSV: %s",
+            err,
+            csv_path,
+        )
+        merged_df.to_csv(csv_path, index=False)
+        return csv_path
