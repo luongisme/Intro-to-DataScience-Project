@@ -128,3 +128,55 @@ class MergeValidator:
             )
 
         logger.info("All 7 HARD checks passed successfully.")
+
+    @staticmethod
+    def run_soft_checks(merged_df: pd.DataFrame) -> None:
+        """Run soft quality checks and log warnings. Does not raise exceptions."""
+        total_rows = len(merged_df)
+
+        # 1. Row count benchmark check (~112,650 +- 1%)
+        pct_diff = abs(total_rows - BENCHMARK_ROW_COUNT) / BENCHMARK_ROW_COUNT * 100
+        if pct_diff > 1.0:
+            logger.warning(
+                "SOFT CHECK WARNING: Total rows (%d) differs from benchmark (%d) by %.2f%% (> 1%%).",
+                total_rows,
+                BENCHMARK_ROW_COUNT,
+                pct_diff,
+            )
+        else:
+            logger.info("Soft check: Row count %d within 1%% of benchmark.", total_rows)
+
+        # 2. Distinct order count
+        distinct_orders = merged_df["order_id"].nunique()
+        logger.info("Soft check: Distinct order count: %d", distinct_orders)
+
+        # 3. Null counts report table
+        null_counts = merged_df.isna().sum()
+        null_report_lines = [
+            f"{col:32s} | Null Count: {count:7d} | Null Pct: {count / total_rows * 100:6.2f}%"
+            for col, count in null_counts.items()
+        ]
+        logger.info(
+            "=== NULL VALUE REPORT (ALL 25 COLUMNS) ===\n%s",
+            "\n".join(null_report_lines),
+        )
+
+        # 4. order_status distribution
+        status_counts = merged_df["order_status"].value_counts(dropna=False).to_dict()
+        logger.info("Soft check: order_status distribution: %s", status_counts)
+
+        # 5. Delivered status but null delivery date anomaly
+        delivered_missing_date = int(
+            (
+                (merged_df["order_status"] == "delivered")
+                & (merged_df["order_delivered_customer_date"].isna())
+            ).sum()
+        )
+        if delivered_missing_date > 0:
+            logger.warning(
+                "SOFT CHECK WARNING: Found %d rows where order_status == 'delivered' "
+                "but order_delivered_customer_date is NaT.",
+                delivered_missing_date,
+            )
+        else:
+            logger.info("Soft check: 0 delivered orders have missing customer delivery dates.")
