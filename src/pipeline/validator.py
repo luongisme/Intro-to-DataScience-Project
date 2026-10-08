@@ -82,8 +82,7 @@ class MergeValidator:
                 )
 
         for zip_col in ZIP_COLUMNS:
-            col_dtype = str(merged_df[zip_col].dtype)
-            if col_dtype not in ("object", "string"):
+            if not pd.api.types.is_string_dtype(merged_df[zip_col]):
                 raise ValueError(
                     f"Hard check failed: Column '{zip_col}' must be string/object to preserve leading zeros, "
                     f"got {merged_df[zip_col].dtype}."
