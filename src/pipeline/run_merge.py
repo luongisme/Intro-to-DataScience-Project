@@ -7,7 +7,7 @@ from typing import List
 import pandas as pd
 
 from src.data_loader import load_data
-from src.paths import PROCESSED_DIR
+from src.paths import INTERIM_DIR
 from src.pipeline.merger import OlistDataMerger
 from src.pipeline.schema import (
     CUSTOMERS_SPEC,
@@ -127,7 +127,7 @@ def run_pipeline() -> pd.DataFrame:
     validator.run_soft_checks(merged_df=merged_df)
 
     # 4. Save
-    save_merged_dataset(merged_df, PROCESSED_DIR)
+    save_merged_dataset(merged_df, output_dir=INTERIM_DIR)
 
     logger.info("========== PIPELINE COMPLETED SUCCESSFULLY ==========")
     return merged_df
