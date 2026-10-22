@@ -3,6 +3,24 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
 
+@dataclass(frozen=True)
+class TableSchema:
+    """Describe a DataFrame independently of its storage format.
+
+    Attributes:
+        columns: Expected column names in their required order.
+        dtypes: Canonical pandas dtype for every column, including timestamps.
+        unique_key: Columns forming one composite unique key, if specified.
+        non_nullable_columns: Columns that must not contain missing values.
+
+    This descriptor stores expectations; it does not validate or modify data.
+    """
+
+    columns: List[str]
+    dtypes: Dict[str, str]
+    unique_key: List[str] = field(default_factory=list)
+    non_nullable_columns: List[str] = field(default_factory=list)
+
 
 @dataclass(frozen=True)
 class TableLoadSpec:
