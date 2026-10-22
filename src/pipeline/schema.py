@@ -1,7 +1,9 @@
 """Data Contract and Schema specifications for the Olist Merge Pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
+
+import pandas as pd
 
 @dataclass(frozen=True)
 class TableSchema:
@@ -52,6 +54,25 @@ class JoinSpec:
     columns: Optional[List[str]] = None
     rename: Dict[str, str] = field(default_factory=dict)
     require_match: bool = True
+
+
+@dataclass(frozen=True, eq=False)
+class MergeResult:
+    """Carry merged data with its schema and merge report.
+
+    Attributes:
+        data: Merged DataFrame, retained by reference without copying.
+        schema: Expected structure and integrity constraints for the data.
+        report: Merge steps and validation results collected by the pipeline.
+
+    This container does not validate data, write files, or build a report.
+    DataFrame contents remain mutable. Compare their values explicitly;
+    result instances use identity equality to avoid ambiguous frame comparisons.
+    """
+
+    data: pd.DataFrame
+    schema: TableSchema
+    report: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
