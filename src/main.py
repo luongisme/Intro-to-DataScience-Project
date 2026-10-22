@@ -7,5 +7,5 @@ orders = orders[orders['order_status'] == 'delivered']
 main_columns = ['order_id', 'order_purchase_timestamp', 'order_approved_at', 'order_delivered_carrier_date', 'order_delivered_customer_date', 'order_estimated_delivery_date']
 orders = orders.dropna(subset = main_columns)
 
-orders["is_late"] = orders["order_delivered_customer_date"].dt.normalize() > orders["order_estimated_delivery_date"]
-orders["delay_days"] = (orders[orders["is_late"]]["order_delivered_customer_date"].dt.normalize() - orders[orders["is_late"]]["order_estimated_delivery_date"]).dt.days
+orders["is_late"] = orders["order_delivered_customer_date"].dt.normalize() > orders["order_estimated_delivery_date"].dt.normalize()
+orders["delay_days"] = (orders[orders["is_late"]]["order_delivered_customer_date"].dt.normalize() - orders[orders["is_late"]]["order_estimated_delivery_date"]).dt.normalize().dt.days

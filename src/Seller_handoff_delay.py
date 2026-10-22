@@ -8,12 +8,12 @@ orders_deadline = items.groupby('order_id')['shipping_limit_date'].max()
 
 orders = orders.merge(orders_deadline, on = 'order_id')
 
-orders['delivery_delay_date'] = (orders['order_delivered_carrier_date'].dt.normalize() - orders['shipping_limit_date'].dt.normalize()).dt.days
+orders['seller_delay_date'] = (orders['order_delivered_carrier_date'].dt.normalize() - orders['shipping_limit_date'].dt.normalize()).dt.days
 
 
 plt.figure(figsize=(8, 5))
-sns.scatterplot(data = orders, x ='delivery_delay_date', y ='delay_days', alpha=0.5)
-plt.xlabel('Seller bàn giao trễ hạn (ngày, âm = sớm)')
-plt.ylabel('Khách nhận trễ so với dự kiến (ngày, âm = sớm)')
-plt.title('Seller trễ hạn vs khách nhận trễ')
+sns.scatterplot(data = orders, x ='seller_delay_date', y ='delay_days', alpha=0.5)
+plt.xlabel('Seller delay date')
+plt.ylabel('Delay days')
+plt.title('Seller delay vs Customer late delivery')
 plt.show()
