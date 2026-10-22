@@ -257,3 +257,19 @@ ZIP_COLUMNS: List[str] = [
 ]
 
 BENCHMARK_ROW_COUNT: int = 112650
+
+# Reuse source declarations for the complete item-level output contract.
+# Timestamp precision is explicit so both storage formats can restore it.
+FULL_MERGE_SCHEMA = TableSchema(
+    columns=EXPECTED_FINAL_COLUMNS.copy(),
+    dtypes={
+        **ORDER_ITEMS_SPEC.dtypes,
+        **ORDERS_SPEC.dtypes,
+        **CUSTOMERS_SPEC.dtypes,
+        **PRODUCTS_SPEC.dtypes,
+        **SELLERS_SPEC.dtypes,
+        **dict.fromkeys(ALL_TIMESTAMP_COLUMNS, "datetime64[us]"),
+    },
+    unique_key=SOURCE_PRIMARY_KEYS[ORDER_ITEMS_SPEC.dataset_name].copy(),
+    non_nullable_columns=MANDATORY_NON_NULL_COLUMNS.copy(),
+)
