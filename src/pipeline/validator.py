@@ -8,7 +8,7 @@ from src.pipeline.schema import (
     ALL_TIMESTAMP_COLUMNS,
     BENCHMARK_ROW_COUNT,
     EXPECTED_FINAL_COLUMNS,
-    MANDATORY_NON_NULL_COLUMNS,
+    FULL_MERGE_SCHEMA,
     SOURCE_PRIMARY_KEYS,
     ZIP_COLUMNS,
     TableSchema,
@@ -195,9 +195,9 @@ class MergeValidator:
 
         Checks:
         1. len(merged) == len(order_items)
-        2. (order_id, order_item_id) is unique
+        2. The declared item-level primary key is complete and unique
         3. Columns equal exactly 25 expected columns in order
-        4. No nulls in key identifiers (order_id, order_item_id, product_id, seller_id, customer_id)
+        4. No nulls in the remaining mandatory identifiers
         5. Timestamp columns are datetime64; zip code columns are string/object
         6. No column ends with _x or _y
         7. Orphan checks: every order_id, product_id, seller_id in base exists in right tables
@@ -212,14 +212,13 @@ class MergeValidator:
                 f"Base order_items has {len(base_order_items)}, but merged has {len(merged_df)}."
             )
 
-        # Hard Check 2: Uniqueness of (order_id, order_item_id)
-        dup_mask = merged_df.duplicated(subset=["order_id", "order_item_id"])
-        if dup_mask.any():
-            dup_count = int(dup_mask.sum())
-            raise ValueError(
-                f"Hard check failed: Duplicate composite key (order_id, order_item_id) detected. "
-                f"Count: {dup_count} duplicates."
-            )
+        # Hard Check 2: Validate the declared item-level primary key
+        primary_key = FULL_MERGE_SCHEMA.unique_key
+        validate_source_keys(
+            merged_df,
+            table_name="merged_order_items",
+            key_columns=primary_key,
+        )
 
         # Hard Check 3: Exact 25 columns and order
         actual_cols = list(merged_df.columns)
@@ -230,8 +229,10 @@ class MergeValidator:
                 f"Actual   ({len(actual_cols)}): {actual_cols}"
             )
 
-        # Hard Check 4: No nulls in mandatory ID columns
-        for col in MANDATORY_NON_NULL_COLUMNS:
+        # Hard Check 4: Validate IDs not already covered by the primary key
+        for col in FULL_MERGE_SCHEMA.non_nullable_columns:
+            if col in primary_key:
+                continue
             null_count = int(merged_df[col].isna().sum())
             if null_count > 0:
                 raise ValueError(
