@@ -1,7 +1,7 @@
 """Data Contract and Schema specifications for the Olist Merge Pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Literal, Optional, Union
 
 @dataclass(frozen=True)
 class TableSchema:
@@ -20,6 +20,38 @@ class TableSchema:
     dtypes: Dict[str, str]
     unique_key: List[str] = field(default_factory=list)
     non_nullable_columns: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class JoinSpec:
+    """Describe one join against a named right-hand table.
+
+    Attributes:
+        table: Registered name of the right-hand table.
+        on: Shared join key or ordered list of shared join keys.
+        left_on: Left-table key or ordered keys when their names differ.
+        right_on: Right-table key or ordered keys matching left_on.
+        how: Join type; left joins preserve the default pipeline behavior.
+        validate: Expected key cardinality; m:m requires an explicit choice.
+        columns: Right-table columns to include, or None for all columns.
+            Join keys are retained even when not listed here.
+        rename: New names for selected non-key right-table columns.
+        require_match: Whether every left-side key must exist on the right.
+
+    Specify either on or both left_on and right_on using original key names.
+    This descriptor stores configuration; join validation and execution are
+    separate operations.
+    """
+
+    table: str
+    on: Optional[Union[str, List[str]]] = None
+    left_on: Optional[Union[str, List[str]]] = None
+    right_on: Optional[Union[str, List[str]]] = None
+    how: Literal["left", "inner", "right", "outer"] = "left"
+    validate: Literal["1:1", "1:m", "m:1", "m:m"] = "m:1"
+    columns: Optional[List[str]] = None
+    rename: Dict[str, str] = field(default_factory=dict)
+    require_match: bool = True
 
 
 @dataclass(frozen=True)
