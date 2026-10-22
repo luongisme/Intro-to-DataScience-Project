@@ -193,6 +193,17 @@ SELLERS_SPEC = TableLoadSpec(
     date_columns=[],
 )
 
+# Each list defines one primary key for a raw source table.
+# Multiple columns form a composite key; they are not individually unique.
+SOURCE_PRIMARY_KEYS: Dict[str, List[str]] = {
+    ORDER_ITEMS_SPEC.dataset_name: ["order_id", "order_item_id"],
+    ORDERS_SPEC.dataset_name: ["order_id"],
+    CUSTOMERS_SPEC.dataset_name: ["customer_id"],
+    PRODUCTS_SPEC.dataset_name: ["product_id"],
+    SELLERS_SPEC.dataset_name: ["seller_id"],
+}
+
+
 # Exact 25 columns required in final output in order
 EXPECTED_FINAL_COLUMNS: List[str] = [
     "order_id",
