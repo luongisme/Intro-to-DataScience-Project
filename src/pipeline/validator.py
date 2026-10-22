@@ -1,7 +1,7 @@
 """Runtime validation layer: Hard checks (raise) and Soft checks (warnings)."""
 
 import logging
-from typing import Set
+from typing import Optional, Sequence, Set
 import pandas as pd
 
 from src.pipeline.schema import (
@@ -9,6 +9,7 @@ from src.pipeline.schema import (
     BENCHMARK_ROW_COUNT,
     EXPECTED_FINAL_COLUMNS,
     MANDATORY_NON_NULL_COLUMNS,
+    SOURCE_PRIMARY_KEYS,
     ZIP_COLUMNS,
     TableSchema,
 )
@@ -93,6 +94,89 @@ def validate_table_schema(
     if mismatches:
         raise ValueError(
             f"Table '{table_name}' has dtype mismatches: " + "; ".join(mismatches)
+        )
+
+
+def validate_source_keys(
+    df: pd.DataFrame,
+    table_name: str,
+    *,
+    key_columns: Optional[Sequence[str]] = None,
+) -> None:
+    """Check that a table has a complete, unique primary key without mutation.
+
+    Use SOURCE_PRIMARY_KEYS unless explicit key columns are supplied. A key
+    with multiple columns is checked as one composite value, not as separate
+    unique columns. Null values and blank strings are invalid key components.
+    Empty tables are valid if the declared key columns exist.
+
+    Args:
+        df: Source table or custom table to inspect.
+        table_name: Registered source name or label for an explicit key.
+        key_columns: Optional key override, such as a list or tuple of names.
+            Custom tables must supply this instead of guessing a key.
+
+    Raises:
+        TypeError: If df or table_name has an unexpected type.
+        ValueError: If key declarations, columns or values are invalid.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"Table '{table_name}' must be a pandas DataFrame.")
+    if not isinstance(table_name, str):
+        raise TypeError("table_name must be a string.")
+    if key_columns is None:
+        if table_name not in SOURCE_PRIMARY_KEYS:
+            raise ValueError(
+                f"No primary key is registered for table '{table_name}'. "
+                "Supply key_columns explicitly for a custom table."
+            )
+        declared_keys = SOURCE_PRIMARY_KEYS[table_name]
+    else:
+        declared_keys = key_columns
+    if isinstance(declared_keys, str) or not isinstance(declared_keys, Sequence):
+        raise ValueError(
+            f"Primary key for '{table_name}' must be a non-empty sequence "
+            "of column names."
+        )
+    keys = list(declared_keys)
+    if not keys or not all(isinstance(key, str) and key.strip() for key in keys):
+        raise ValueError(
+            f"Primary key for '{table_name}' requires non-empty string column names."
+        )
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"Primary key for '{table_name}' repeats a column name.")
+    if df.columns.has_duplicates:
+        raise ValueError(f"Table '{table_name}' has duplicate column names.")
+    missing_columns = [key for key in keys if key not in df.columns]
+    if missing_columns:
+        raise ValueError(
+            f"Table '{table_name}' is missing primary key columns: {missing_columns}."
+        )
+
+    missing_rows = int(df[keys].isna().any(axis=1).sum())
+    if missing_rows:
+        raise ValueError(
+            f"Primary key {keys} in table '{table_name}' has missing values "
+            f"in {missing_rows} row(s)."
+        )
+    blank_counts = {}
+    for key in keys:
+        count = sum(
+            isinstance(value, str) and not value.strip()
+            for value in df[key]
+        )
+        if count:
+            blank_counts[key] = count
+    if blank_counts:
+        raise ValueError(
+            f"Primary key in table '{table_name}' has blank string values: "
+            f"{blank_counts}."
+        )
+    duplicate_count = int(df.duplicated(subset=keys).sum())
+    if duplicate_count:
+        raise ValueError(
+            f"Primary key {keys} in table '{table_name}' is not unique: "
+            f"{duplicate_count} repeated row(s) after the first occurrence."
         )
 
 
