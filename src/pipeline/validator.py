@@ -10,9 +10,90 @@ from src.pipeline.schema import (
     EXPECTED_FINAL_COLUMNS,
     MANDATORY_NON_NULL_COLUMNS,
     ZIP_COLUMNS,
+    TableSchema,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def validate_table_schema(
+    df: pd.DataFrame,
+    schema: TableSchema,
+    *,
+    table_name: str = "dataset",
+) -> None:
+    """Check exact column structure and dtypes without modifying the table.
+
+    Require unique column names, complete dtype declarations, exact column
+    order and canonical pandas dtypes, including datetime precision. Empty
+    tables are valid when their columns and dtypes satisfy the schema.
+    Row uniqueness, missing values and foreign keys are checked separately.
+
+    Args:
+        df: Table to inspect without conversion or mutation.
+        schema: Expected ordered columns and pandas dtypes.
+        table_name: Table label included in error messages.
+
+    Raises:
+        TypeError: If df or schema has an unexpected type.
+        ValueError: If the schema declarations or table structure are invalid.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"Table '{table_name}' must be a pandas DataFrame.")
+    if not isinstance(schema, TableSchema):
+        raise TypeError(f"Schema for '{table_name}' must be a TableSchema.")
+
+    expected_columns = list(schema.columns)
+    if not all(isinstance(column, str) for column in expected_columns):
+        raise ValueError(f"Schema for '{table_name}' requires string column names.")
+    if len(expected_columns) != len(set(expected_columns)):
+        raise ValueError(f"Schema for '{table_name}' declares duplicate columns.")
+    missing_dtypes = [col for col in expected_columns if col not in schema.dtypes]
+    extra_dtypes = [col for col in schema.dtypes if col not in expected_columns]
+    if missing_dtypes or extra_dtypes:
+        raise ValueError(
+            f"Schema for '{table_name}' has inconsistent dtype declarations: "
+            f"missing={missing_dtypes}, extra={extra_dtypes}."
+        )
+    if df.columns.has_duplicates:
+        duplicate_columns = df.columns[df.columns.duplicated()].tolist()
+        raise ValueError(
+            f"Table '{table_name}' has duplicate column names: {duplicate_columns}."
+        )
+
+    actual_columns = list(df.columns)
+    missing_columns = [col for col in expected_columns if col not in df.columns]
+    extra_columns = [col for col in actual_columns if col not in expected_columns]
+    if missing_columns or extra_columns:
+        raise ValueError(
+            f"Table '{table_name}' has a column mismatch: "
+            f"missing={missing_columns}, extra={extra_columns}."
+        )
+    if actual_columns != expected_columns:
+        raise ValueError(
+            f"Table '{table_name}' has an incorrect column order. "
+            f"Expected: {expected_columns}. Actual: {actual_columns}."
+        )
+
+    mismatches = []
+    for column in expected_columns:
+        declared_dtype = schema.dtypes[column]
+        try:
+            expected_dtype = pd.api.types.pandas_dtype(declared_dtype)
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"Schema for '{table_name}' declares an invalid dtype for "
+                f"column '{column}': {declared_dtype!r}."
+            ) from err
+        actual_dtype = df[column].dtype
+        if not pd.api.types.is_dtype_equal(actual_dtype, expected_dtype):
+            mismatches.append(
+                f"{column}: expected {expected_dtype}, got {actual_dtype}"
+            )
+    if mismatches:
+        raise ValueError(
+            f"Table '{table_name}' has dtype mismatches: " + "; ".join(mismatches)
+        )
 
 
 class MergeValidator:
