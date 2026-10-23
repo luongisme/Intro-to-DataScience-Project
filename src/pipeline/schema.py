@@ -1,7 +1,7 @@
 """Data Contract and Schema specifications for the Olist Merge Pipeline."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Sequence, Union
 
 import pandas as pd
 
@@ -273,3 +273,105 @@ FULL_MERGE_SCHEMA = TableSchema(
     unique_key=SOURCE_PRIMARY_KEYS[ORDER_ITEMS_SPEC.dataset_name].copy(),
     non_nullable_columns=MANDATORY_NON_NULL_COLUMNS.copy(),
 )
+
+
+def build_source_schema(
+    spec: TableLoadSpec,
+    *,
+    key_columns: Optional[Sequence[str]] = None,
+) -> TableSchema:
+    """Create an independent source contract from raw loading declarations.
+
+    Preserve declared column order and dtypes. Columns in date_columns use
+    datetime64[us] and must not also appear in dtypes. Every selected column
+    needs exactly one dtype declaration. Use SOURCE_PRIMARY_KEYS unless an
+    explicit key is supplied; other source names require key_columns.
+
+    Declare primary-key components as non-null. Other attributes, including
+    foreign keys, gain constraints through separate join validation rather
+    than assumptions about their names. The returned schema has independent
+    lists and mappings. Do not load data, inspect values or validate that
+    actual rows satisfy this contract.
+
+    Args:
+        spec: Source name, selected columns and raw dtype declarations.
+        key_columns: Optional primary-key override for this source contract.
+
+    Raises:
+        TypeError: If spec or its dtype mapping has an unexpected type.
+        ValueError: If columns, dtype declarations or key declarations are invalid.
+    """
+    if not isinstance(spec, TableLoadSpec):
+        raise TypeError("build_source_schema requires a TableLoadSpec.")
+    if not isinstance(spec.dataset_name, str) or not spec.dataset_name.strip():
+        raise ValueError("TableLoadSpec.dataset_name must be a non-empty string.")
+    if isinstance(spec.usecols, str) or not isinstance(spec.usecols, Sequence):
+        raise ValueError("TableLoadSpec.usecols must be a sequence of column names.")
+    columns = list(spec.usecols)
+    if not columns or not all(isinstance(col, str) and col.strip() for col in columns):
+        raise ValueError("TableLoadSpec.usecols requires non-empty string names.")
+    if len(columns) != len(set(columns)):
+        raise ValueError(f"Load specification for '{spec.dataset_name}' repeats a column.")
+    if isinstance(spec.date_columns, str) or not isinstance(spec.date_columns, Sequence):
+        raise ValueError("TableLoadSpec.date_columns must be a sequence of names.")
+    dates = list(spec.date_columns)
+    if not all(isinstance(col, str) and col.strip() for col in dates):
+        raise ValueError("TableLoadSpec.date_columns requires non-empty string names.")
+    if len(dates) != len(set(dates)):
+        raise ValueError(f"Load specification for '{spec.dataset_name}' repeats a date column.")
+    if not isinstance(spec.dtypes, dict):
+        raise TypeError("TableLoadSpec.dtypes must be a dictionary.")
+    overlap = [col for col in dates if col in spec.dtypes]
+    if overlap:
+        raise ValueError(
+            f"Table '{spec.dataset_name}' declares dtypes for date_columns: {overlap}. "
+            "Declare timestamps only in date_columns."
+        )
+    dtypes = {**spec.dtypes, **dict.fromkeys(dates, "datetime64[us]")}
+    missing_dtypes = [col for col in columns if col not in dtypes]
+    extra_dtypes = [col for col in dtypes if col not in columns]
+    if missing_dtypes or extra_dtypes:
+        raise ValueError(
+            f"Table '{spec.dataset_name}' has inconsistent load dtype declarations: "
+            f"missing={missing_dtypes}, extra={extra_dtypes}."
+        )
+    for column, dtype in dtypes.items():
+        if not isinstance(dtype, str) or not dtype.strip():
+            raise ValueError(
+                f"Table '{spec.dataset_name}' requires a dtype string for '{column}'."
+            )
+        try:
+            pd.api.types.pandas_dtype(dtype)
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"Table '{spec.dataset_name}' declares an invalid dtype for "
+                f"'{column}': {dtype!r}."
+            ) from err
+
+    declared_keys = key_columns
+    if declared_keys is None:
+        if spec.dataset_name not in SOURCE_PRIMARY_KEYS:
+            raise ValueError(
+                f"No primary key is registered for table '{spec.dataset_name}'. "
+                "Supply key_columns explicitly for a custom source contract."
+            )
+        declared_keys = SOURCE_PRIMARY_KEYS[spec.dataset_name]
+    if isinstance(declared_keys, str) or not isinstance(declared_keys, Sequence):
+        raise ValueError("Primary key must be a non-empty sequence of column names.")
+    keys = list(declared_keys)
+    if not keys or not all(isinstance(key, str) and key.strip() for key in keys):
+        raise ValueError("Primary key requires non-empty string column names.")
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"Primary key for '{spec.dataset_name}' repeats a column name.")
+    missing_keys = [key for key in keys if key not in columns]
+    if missing_keys:
+        raise ValueError(
+            f"Source schema for '{spec.dataset_name}' is missing primary key columns: "
+            f"{missing_keys}."
+        )
+    return TableSchema(
+        columns=columns,
+        dtypes=dtypes,
+        unique_key=keys,
+        non_nullable_columns=keys.copy(),
+    )
