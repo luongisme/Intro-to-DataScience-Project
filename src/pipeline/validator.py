@@ -1,7 +1,7 @@
 """Runtime validation layer: Hard checks (raise) and Soft checks (warnings)."""
 
 import logging
-from typing import Optional, Sequence, Set
+from typing import Dict, Optional, Sequence, Set
 import pandas as pd
 
 from src.pipeline.schema import (
@@ -9,6 +9,7 @@ from src.pipeline.schema import (
     BENCHMARK_ROW_COUNT,
     EXPECTED_FINAL_COLUMNS,
     FULL_MERGE_SCHEMA,
+    JoinSpec,
     SOURCE_PRIMARY_KEYS,
     ZIP_COLUMNS,
     TableSchema,
@@ -178,6 +179,113 @@ def validate_source_keys(
             f"Primary key {keys} in table '{table_name}' is not unique: "
             f"{duplicate_count} repeated row(s) after the first occurrence."
         )
+
+
+def validate_foreign_keys(
+    left_df: pd.DataFrame,
+    right_df: pd.DataFrame,
+    join: JoinSpec,
+    *,
+    left_table_name: str = "left",
+) -> Dict[str, int]:
+    """Check left-key membership in a right table without joining or mutation.
+
+    Read original key names from either on or left_on/right_on. Composite
+    keys must match as complete tuples. Repeated keys are allowed on either
+    side; primary-key uniqueness and join cardinality are checked separately.
+    Null or blank key components never match, even when present on both sides.
+    Invalid right keys are ignored here, not removed from the input table.
+    Missing values in non-key attributes do not affect matching.
+
+    Return counts of left rows, matched rows, unmatched rows, distinct
+    unmatched keys and rows with invalid key components. Invalid left keys
+    are included in the unmatched counts. Raise on unmatched rows unless
+    require_match=False; permissive checks still report them without dropping
+    rows. Other JoinSpec options are applied by the join executor.
+
+    Raises:
+        TypeError: If tables, join or configuration values have invalid types.
+        ValueError: If key declarations, columns or required links are invalid.
+    """
+    if not isinstance(left_df, pd.DataFrame) or not isinstance(right_df, pd.DataFrame):
+        raise TypeError("Foreign key checks require two pandas DataFrames.")
+    if not isinstance(join, JoinSpec):
+        raise TypeError("Foreign key checks require a JoinSpec.")
+    if not isinstance(left_table_name, str) or not left_table_name.strip():
+        raise ValueError("left_table_name must be a non-empty string.")
+    if not isinstance(join.table, str) or not join.table.strip():
+        raise ValueError("JoinSpec.table must be a non-empty string.")
+    if not isinstance(join.require_match, bool):
+        raise TypeError("JoinSpec.require_match must be a boolean.")
+
+    if join.on is not None:
+        if join.left_on is not None or join.right_on is not None:
+            raise ValueError("Specify either on or left_on/right_on, not both.")
+        declared_keys = (join.on, join.on)
+    else:
+        if join.left_on is None or join.right_on is None:
+            raise ValueError("Specify on or both left_on and right_on.")
+        declared_keys = (join.left_on, join.right_on)
+
+    key_groups = []
+    valid_masks = []
+    for frame, table_name, declared in zip(
+        (left_df, right_df), (left_table_name, join.table), declared_keys
+    ):
+        if isinstance(declared, str):
+            keys = [declared]
+        elif isinstance(declared, Sequence):
+            keys = list(declared)
+        else:
+            raise ValueError(f"Join keys for '{table_name}' must be column names.")
+        if not keys or not all(isinstance(key, str) and key.strip() for key in keys):
+            raise ValueError(
+                f"Join keys for '{table_name}' require non-empty string column names."
+            )
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"Join keys for '{table_name}' repeat a column name.")
+        if frame.columns.has_duplicates:
+            raise ValueError(f"Table '{table_name}' has duplicate column names.")
+        missing_columns = [key for key in keys if key not in frame.columns]
+        if missing_columns:
+            raise ValueError(
+                f"Table '{table_name}' is missing join key columns: {missing_columns}."
+            )
+        valid = ~frame[keys].isna().any(axis=1).to_numpy(dtype=bool)
+        for key in keys:
+            blank = frame[key].map(
+                lambda value: isinstance(value, str) and not value.strip()
+            ).to_numpy(dtype=bool)
+            valid &= ~blank
+        key_groups.append(keys)
+        valid_masks.append(valid)
+
+    left_keys, right_keys = key_groups
+    if len(left_keys) != len(right_keys):
+        raise ValueError("left_on and right_on must contain the same number of keys.")
+    left_valid, right_valid = valid_masks
+    left_index = pd.MultiIndex.from_frame(left_df.loc[left_valid, left_keys])
+    right_index = pd.MultiIndex.from_frame(right_df.loc[right_valid, right_keys])
+    matched = left_valid.copy()
+    matched[left_valid] = left_index.isin(right_index)
+    unmatched_rows = int((~matched).sum())
+    unmatched_keys = len(left_df.loc[~matched, left_keys].drop_duplicates())
+    report = {
+        "left_rows": len(left_df),
+        "matched_rows": int(matched.sum()),
+        "unmatched_rows": unmatched_rows,
+        "unmatched_keys": unmatched_keys,
+        "invalid_key_rows": int((~left_valid).sum()),
+    }
+    if join.require_match and unmatched_rows:
+        key_label = left_keys[0] if len(left_keys) == 1 else str(left_keys)
+        raise ValueError(
+            f"Foreign key check failed: {unmatched_keys} orphan {key_label} key(s) "
+            f"in '{left_table_name}' do not match '{join.table}': "
+            f"{unmatched_rows} unmatched row(s), "
+            f"{report['invalid_key_rows']} null or blank key row(s)."
+        )
+    return report
 
 
 class MergeValidator:
