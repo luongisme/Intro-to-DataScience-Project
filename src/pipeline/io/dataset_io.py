@@ -6,11 +6,11 @@ from typing import Literal, Union
 
 import pandas as pd
 
-from pipeline.io.atomic_io import write_file_atomically
-from pipeline.io.csv_io import read_csv_dataset, write_csv_dataset
-from src.pipeline.parquet_io import read_parquet_dataset, write_parquet_dataset
-from pipeline.contracts.schema import TableSchema
-from pipeline.contracts.validator import validate_table_contract
+from src.pipeline.io.atomic_io import write_file_atomically
+from src.pipeline.io.csv_io import read_csv_dataset, write_csv_dataset
+from src.pipeline.io.parquet_io import read_parquet_dataset, write_parquet_dataset
+from src.pipeline.contracts.schema import TableSchema
+from src.pipeline.contracts.validator import validate_table_contract
 
 
 def save_dataset(

@@ -6,9 +6,9 @@ from pathlib import Path
 import pandas as pd
 
 from src.paths import RAW_DIR, INTERIM_DIR
-from src.pipeline.dataset_io import read_dataset
-from src.pipeline.registry import build_dataset_registry
-from src.pipeline.schema import TableSchema
+from src.pipeline.io.dataset_io import read_dataset
+from src.pipeline.merging.registry import build_dataset_registry
+from src.pipeline.contracts.schema import TableSchema
 
 
 # Raw datasets

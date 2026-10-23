@@ -3,7 +3,7 @@
 from collections import deque
 from typing import Any, Dict, List, Sequence, Tuple
 
-from pipeline.contracts.schema import (
+from src.pipeline.contracts.schema import (
     CUSTOMERS_SPEC,
     ORDER_ITEMS_SPEC,
     ORDERS_SPEC,

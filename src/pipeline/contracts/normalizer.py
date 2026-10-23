@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from pipeline.contracts.schema import TableSchema
+from src.pipeline.contracts.schema import TableSchema
 
 
 def normalize_table_types(

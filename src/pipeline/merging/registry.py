@@ -3,9 +3,9 @@
 from itertools import combinations
 from typing import Any, Dict
 
-from pipeline.merging.planner import MERGE_TABLE_SPECS, build_combination_plan
-from pipeline.contracts.schema import build_source_schema
-from pipeline.contracts.schema_derivation import derive_join_schema
+from src.pipeline.merging.planner import MERGE_TABLE_SPECS, build_combination_plan
+from src.pipeline.contracts.schema import build_source_schema
+from src.pipeline.contracts.schema_derivation import derive_join_schema
 
 
 FULL_DATASET_NAME = "merged_order_items"

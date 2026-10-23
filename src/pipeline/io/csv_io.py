@@ -9,10 +9,10 @@ from typing import Union
 
 import pandas as pd
 
-from pipeline.io.csv_codec import decode_csv_strings, encode_csv_strings
-from pipeline.contracts.schema import TableSchema
-from pipeline.io.csv_types import restore_csv_column
-from pipeline.contracts.validator import validate_table_contract
+from src.pipeline.io.csv_codec import decode_csv_strings, encode_csv_strings
+from src.pipeline.contracts.schema import TableSchema
+from src.pipeline.io.csv_types import restore_csv_column
+from src.pipeline.contracts.validator import validate_table_contract
 
 
 _CSV_FIELD_SIZE_LOCK = RLock()

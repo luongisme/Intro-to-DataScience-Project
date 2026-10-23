@@ -6,11 +6,11 @@ from pathlib import Path
 import pandas as pd
 
 from src.paths import INTERIM_DIR
-from src.pipeline.dataset_io import save_dataset
-from src.pipeline.loader import load_table
-from src.pipeline.merger import OlistDataMerger
-from src.pipeline.registry import FULL_DATASET_NAME
-from src.pipeline.schema import (
+from src.pipeline.io.dataset_io import save_dataset
+from src.pipeline.io.loader import load_table
+from src.pipeline.merging.merger import OlistDataMerger
+from src.pipeline.merging.registry import FULL_DATASET_NAME
+from src.pipeline.contracts.schema import (
     CUSTOMERS_SPEC,
     FULL_MERGE_SCHEMA,
     ORDER_ITEMS_SPEC,
@@ -19,7 +19,7 @@ from src.pipeline.schema import (
     SELLERS_SPEC,
     TableLoadSpec,
 )
-from src.pipeline.validator import MergeValidator
+from src.pipeline.contracts.validator import MergeValidator
 
 logging.basicConfig(
     level=logging.INFO,

@@ -5,9 +5,9 @@ from typing import Optional, Sequence
 import pandas as pd
 
 from src.data_loader import load_data
-from pipeline.contracts.normalizer import normalize_table_types
-from pipeline.contracts.schema import TableLoadSpec, build_source_schema
-from pipeline.contracts.validator import validate_source_keys, validate_table_schema
+from src.pipeline.contracts.normalizer import normalize_table_types
+from src.pipeline.contracts.schema import TableLoadSpec, build_source_schema
+from src.pipeline.contracts.validator import validate_source_keys, validate_table_schema
 
 
 def load_table(

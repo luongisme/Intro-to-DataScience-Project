@@ -4,7 +4,7 @@ from typing import Sequence
 
 import pandas as pd
 
-from pipeline.contracts.schema import JoinSpec, TableSchema
+from src.pipeline.contracts.schema import JoinSpec, TableSchema
 
 
 def derive_join_schema(

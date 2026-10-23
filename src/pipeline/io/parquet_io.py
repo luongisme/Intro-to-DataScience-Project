@@ -5,9 +5,9 @@ from typing import Union
 
 import pandas as pd
 
-from pipeline.contracts.normalizer import normalize_table_types
-from pipeline.contracts.schema import TableSchema
-from pipeline.contracts.validator import validate_table_contract
+from src.pipeline.contracts.normalizer import normalize_table_types
+from src.pipeline.contracts.schema import TableSchema
+from src.pipeline.contracts.validator import validate_table_contract
 
 
 def write_parquet_dataset(

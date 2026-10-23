@@ -5,7 +5,7 @@ from numbers import Integral
 from typing import Dict, Optional, Sequence
 import pandas as pd
 
-from pipeline.contracts.schema import (
+from src.pipeline.contracts.schema import (
     ALL_TIMESTAMP_COLUMNS,
     BENCHMARK_ROW_COUNT,
     EXPECTED_FINAL_COLUMNS,

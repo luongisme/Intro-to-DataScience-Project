@@ -7,14 +7,14 @@ import pytest
 
 from src.paths import RAW_DIR
 from src.data_loader import DATASETS, load_data
-from src.pipeline.merger import OlistDataMerger
+from src.pipeline.merging.merger import OlistDataMerger
 from src.pipeline.run_merge import _load_and_prepare, run_pipeline
-from src.pipeline.schema import (
+from src.pipeline.contracts.schema import (
     EXPECTED_FINAL_COLUMNS,
     ORDER_ITEMS_SPEC,
     TableLoadSpec,
 )
-from src.pipeline.validator import MergeValidator
+from src.pipeline.contracts.validator import MergeValidator
 
 
 # 1. Multi-item order preservation

@@ -4,10 +4,10 @@ from typing import Mapping, Optional, Sequence
 
 import pandas as pd
 
-from src.pipeline.loader import load_table
-from src.pipeline.merger import execute_join_plan
-from src.pipeline.planner import MERGE_TABLE_SPECS, build_combination_plan
-from src.pipeline.schema import JoinSpec, MergeResult, TableSchema, build_source_schema
+from src.pipeline.io.loader import load_table
+from src.pipeline.merging.merger import execute_join_plan
+from src.pipeline.merging.planner import MERGE_TABLE_SPECS, build_combination_plan
+from src.pipeline.contracts.schema import JoinSpec, MergeResult, TableSchema, build_source_schema
 
 
 def merge_data(
