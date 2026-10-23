@@ -1,11 +1,19 @@
 """Merge logic for combining Olist tables into a single item-level DataFrame."""
 
 import logging
+from dataclasses import replace
 from typing import List, Mapping, Sequence, Set
 import pandas as pd
 
 from src.pipeline.normalizer import normalize_table_types
-from src.pipeline.schema import EXPECTED_FINAL_COLUMNS, JoinSpec, MergeResult, TableSchema
+from src.pipeline.planner import MERGE_TABLE_SPECS, build_combination_plan
+from src.pipeline.schema import (
+    EXPECTED_FINAL_COLUMNS,
+    JoinSpec,
+    MergeResult,
+    TableSchema,
+    build_source_schema,
+)
 from src.pipeline.schema_derivation import derive_join_schema
 from src.pipeline.validator import (
     validate_foreign_keys,
@@ -324,66 +332,61 @@ class OlistDataMerger:
         products: pd.DataFrame,
         sellers: pd.DataFrame,
     ) -> pd.DataFrame:
-        """Merge all 5 Olist tables strictly in left-join order.
+        """Adapt the five-table legacy API to the shared join-plan executor.
 
-        Join sequence:
-        1. order_items LEFT JOIN orders on order_id
-        2. + LEFT JOIN customers on customer_id
-        3. + LEFT JOIN products on product_id
-        4. + LEFT JOIN sellers on seller_id
+        Preserve the positional/keyword arguments, DataFrame return type,
+        configured output-column order and non-mutating behavior. Normalize
+        supplied tables with their registered contracts so existing callers
+        can pass pandas-inferred strings, timestamp precision or column order.
+        Retain unexpected columns for explicit contract errors. Conversion
+        must remain lossless; never fill attributes, filter rows or load files.
 
-        Args:
-            order_items: Base item table.
-            orders: Orders table.
-            customers: Customers table.
-            products: Products table.
-            sellers: Sellers table.
+        Use the registered full preset for table order and join keys, but
+        retain the legacy left-join policy: unmatched items remain available
+        for the caller's subsequent validation. The public preset API keeps
+        its strict require_match=True policy. Preserve MergeError for repeated
+        right keys before source-contract validation would raise ValueError.
 
-        Returns:
-            pd.DataFrame: New merged DataFrame matching EXPECTED_FINAL_COLUMNS.
+        Delegate all joining, null-key handling, schema derivation and result
+        checks to execute_join_plan; do not keep a second merge algorithm.
+        Additional source-contract violations now fail explicitly rather than
+        passing unchecked. This adapter does not save data or reports.
+
+        Raises:
+            TypeError: If an input is not a DataFrame.
+            ValueError: If conversion, source or result contracts are invalid.
+            pandas.errors.MergeError: If right-side join keys are duplicated.
         """
-        # Immutability guarantee: clone input base table
-        current_df = order_items.copy(deep=True)
-        initial_rows = len(current_df)
-        logger.info("Starting merge pipeline. Base table rows: %d", initial_rows)
-
-        # 1. Join orders on order_id
-        current_df = self._safe_left_join(
-            left_df=current_df,
-            right_df=orders,
-            on="order_id",
-            table_name="orders",
+        sources = {
+            "order_items": order_items,
+            "orders": orders,
+            "customers": customers,
+            "products": products,
+            "sellers": sellers,
+        }
+        plan = build_combination_plan(list(sources))
+        schemas = {
+            name: build_source_schema(MERGE_TABLE_SPECS[name]) for name in sources
+        }
+        frames = {}
+        for name, frame in sources.items():
+            normalized = normalize_table_types(frame, schemas[name], table_name=name)
+            columns = schemas[name].columns + [
+                column for column in normalized.columns
+                if column not in schemas[name].columns
+            ]
+            frames[name] = normalized.loc[:, columns]
+        for join in plan["joins"]:
+            keys = schemas[join.table].unique_key
+            if frames[join.table].duplicated(keys).any():
+                raise pd.errors.MergeError(
+                    f"Join '{join.table}' violates cardinality 'm:1': "
+                    f"right keys {keys} are not unique."
+                )
+        result = execute_join_plan(
+            plan["base"],
+            [replace(join, require_match=False) for join in plan["joins"]],
+            frames,
+            schemas,
         )
-        logger.info("Joined 'orders'. Current shape: %s", current_df.shape)
-
-        # 2. Join customers on customer_id
-        current_df = self._safe_left_join(
-            left_df=current_df,
-            right_df=customers,
-            on="customer_id",
-            table_name="customers",
-        )
-        logger.info("Joined 'customers'. Current shape: %s", current_df.shape)
-
-        # 3. Join products on product_id
-        current_df = self._safe_left_join(
-            left_df=current_df,
-            right_df=products,
-            on="product_id",
-            table_name="products",
-        )
-        logger.info("Joined 'products'. Current shape: %s", current_df.shape)
-
-        # 4. Join sellers on seller_id
-        current_df = self._safe_left_join(
-            left_df=current_df,
-            right_df=sellers,
-            on="seller_id",
-            table_name="sellers",
-        )
-        logger.info("Joined 'sellers'. Current shape: %s", current_df.shape)
-
-        # Ensure column ordering matches specification exactly
-        result = current_df[self.expected_columns].copy(deep=True)
-        logger.info("Merge completed successfully. Output shape: %s", result.shape)
-        return result
+        return result.data.loc[:, self.expected_columns].copy(deep=True)
