@@ -9,8 +9,7 @@ from src.pipeline.schema import EXPECTED_FINAL_COLUMNS, JoinSpec, MergeResult, T
 from src.pipeline.schema_derivation import derive_join_schema
 from src.pipeline.validator import (
     validate_foreign_keys,
-    validate_source_keys,
-    validate_table_schema,
+    validate_table_contract,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,16 +53,7 @@ def execute_join(
         (left_df, left_schema, left_table_name),
         (right_df, right_schema, join.table),
     ):
-        validate_table_schema(frame, schema, table_name=label)
-        if schema.unique_key:
-            validate_source_keys(frame, label, key_columns=schema.unique_key)
-        missing = {
-            name: int(frame[name].isna().sum())
-            for name in schema.non_nullable_columns
-            if frame[name].isna().any()
-        }
-        if missing:
-            raise ValueError(f"Table '{label}' violates non-null constraints: {missing}.")
+        validate_table_contract(frame, schema, table_name=label)
     matching = validate_foreign_keys(
         left_df, right_df, join, left_table_name=left_table_name
     )
@@ -126,11 +116,6 @@ def execute_join(
         join.how == "right" or (join.how == "outer" and join.require_match)
     ):
         expected_rows = len(right_df)
-    if expected_rows is not None and len(merged) != expected_rows:
-        raise ValueError(
-            f"Join '{join.table}' changed a guaranteed row count: "
-            f"expected {expected_rows}, got {len(merged)}."
-        )
     if len(merged.columns) != len(output_schema.columns) or set(merged.columns) != set(
         output_schema.columns
     ):
@@ -138,16 +123,12 @@ def execute_join(
     result = normalize_table_types(
         merged.loc[:, output_schema.columns], output_schema, table_name="join_result"
     )
-    validate_table_schema(result, output_schema, table_name="join_result")
-    if output_schema.unique_key:
-        validate_source_keys(result, "join_result", key_columns=output_schema.unique_key)
-    missing = {
-        name: int(result[name].isna().sum())
-        for name in output_schema.non_nullable_columns
-        if result[name].isna().any()
-    }
-    if missing:
-        raise ValueError(f"Join output violates non-null constraints: {missing}.")
+    validate_table_contract(
+        result,
+        output_schema,
+        table_name="join_result",
+        expected_rows=expected_rows,
+    )
     return MergeResult(
         data=result,
         schema=output_schema,
