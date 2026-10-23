@@ -6,9 +6,11 @@ from pathlib import Path
 import pandas as pd
 
 from src.paths import INTERIM_DIR
+from src.pipeline.api import merge_data
 from src.pipeline.io.dataset_io import save_dataset
 from src.pipeline.io.loader import load_table
 from src.pipeline.merging.merger import OlistDataMerger
+from src.pipeline.merging.planner import MERGE_TABLE_SPECS
 from src.pipeline.merging.registry import FULL_DATASET_NAME
 from src.pipeline.contracts.schema import (
     CUSTOMERS_SPEC,
@@ -77,42 +79,37 @@ def save_merged_dataset(merged_df: pd.DataFrame, output_dir: Path) -> Path:
 
 
 def run_pipeline() -> pd.DataFrame:
-    """Execute end-to-end data merge pipeline."""
+    """Strictly merge and save the registered full Olist dataset.
+
+    Delegate raw loading, dtype handling, preset planning, foreign-key checks
+    and output validation to merge_data for all registered merge tables.
+    Reuse the canonical table registry instead of repeating the five-table
+    configuration or maintaining a second validation policy here.
+
+    Save the resulting data through save_merged_dataset in INTERIM_DIR.
+    Preserve Parquet-to-CSV fallback and the existing no-argument call and
+    DataFrame return contract used by the notebook, tests and CLI. The merge
+    result's schema/report remain in memory; this entry point returns data
+    only. Call merge_data directly when schema and report are also needed.
+
+    Do not filter rows, run legacy soft checks or write report/documents.
+    Loading/merge failures propagate before saving. Save failures propagate
+    without logging successful completion or returning partial results.
+
+    Returns:
+        The validated full item-level DataFrame after a successful save.
+
+    Raises:
+        Exception: Loading, merge validation or dataset saving failures
+            propagate from the shared functions unchanged.
+    """
     logger.info("========== STARTING OLIST MERGE PIPELINE ==========")
 
-    # 1. Load and parse 5 tables
-    order_items = _load_and_prepare(ORDER_ITEMS_SPEC)
-    orders = _load_and_prepare(ORDERS_SPEC)
-    customers = _load_and_prepare(CUSTOMERS_SPEC)
-    products = _load_and_prepare(PRODUCTS_SPEC)
-    sellers = _load_and_prepare(SELLERS_SPEC)
-
-    # 2. Merge tables
-    merger = OlistDataMerger()
-    merged_df = merger.merge_tables(
-        order_items=order_items,
-        orders=orders,
-        customers=customers,
-        products=products,
-        sellers=sellers,
-    )
-
-    # 3. Validate
-    validator = MergeValidator()
-    validator.validate_hard_rules(
-        merged_df=merged_df,
-        base_order_items=order_items,
-        orders=orders,
-        products=products,
-        sellers=sellers,
-    )
-    validator.run_soft_checks(merged_df=merged_df)
-
-    # 4. Save
-    save_merged_dataset(merged_df, output_dir=INTERIM_DIR)
+    result = merge_data(tables=list(MERGE_TABLE_SPECS))
+    save_merged_dataset(result.data, output_dir=INTERIM_DIR)
 
     logger.info("========== PIPELINE COMPLETED SUCCESSFULLY ==========")
-    return merged_df
+    return result.data
 
 
 if __name__ == "__main__":
