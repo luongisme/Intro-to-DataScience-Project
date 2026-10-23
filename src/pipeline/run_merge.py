@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import List
 import pandas as pd
 
-from src.data_loader import load_data
 from src.paths import INTERIM_DIR
+from src.pipeline.loader import load_table
 from src.pipeline.merger import OlistDataMerger
 from src.pipeline.schema import (
     CUSTOMERS_SPEC,
@@ -28,44 +28,21 @@ logger = logging.getLogger("olist_pipeline")
 
 
 def _load_and_prepare(spec: TableLoadSpec) -> pd.DataFrame:
-    """Load table via load_data with usecols/dtype and parse dates with errors='raise'.
+    """Load a validated raw table through the shared typed loader.
 
-    Args:
-        spec: TableLoadSpec containing usecols, dtypes, and date columns.
-
-    Returns:
-        pd.DataFrame: Cleanly parsed DataFrame.
+    Keep the existing entry point for pipeline and notebook compatibility.
+    Delegate column ordering, dtype normalization and source-key validation
+    to load_table without maintaining a separate parsing implementation.
 
     Raises:
-        FileNotFoundError: If file is missing.
-        ValueError: If columns are missing or date parsing fails.
+        FileNotFoundError: If the registered source file is missing.
+        ValueError: If the load specification, values or source keys are invalid.
     """
     logger.info("Loading table '%s'...", spec.dataset_name)
-    try:
-        df = load_data(
-            name=spec.dataset_name,
-            usecols=spec.usecols,
-            dtype=spec.dtypes,
-        )
-    except ValueError as err:
-        if "Usecols do not match columns" in str(err):
-            raise ValueError(
-                f"Table '{spec.dataset_name}' missing expected columns from CSV. {err}"
-            ) from err
-        raise
-
-    missing_expected = set(spec.usecols) - set(df.columns)
-    if missing_expected:
-        raise ValueError(
-            f"Table '{spec.dataset_name}' missing expected columns: {sorted(missing_expected)}"
-        )
-
-    # Parse timestamps with errors='raise'
-    for date_col in spec.date_columns:
-        df[date_col] = pd.to_datetime(df[date_col], errors="raise")
-
+    df = load_table(spec)
     logger.info("Loaded '%s' with shape %s", spec.dataset_name, df.shape)
     return df
+
 
 def save_merged_dataset(merged_df: pd.DataFrame, output_dir: Path) -> Path:
     """Save DataFrame to processed folder as Parquet with CSV fallback.
