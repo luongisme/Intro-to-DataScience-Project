@@ -23,7 +23,10 @@ def write_parquet_dataset(
     Never mutate the input or serialize its arbitrary DataFrame attributes.
 
     Use Parquet 2.6 with native nanosecond timestamps and reject timestamp
-    truncation. Keep Arrow's embedded schema and pandas type information for
+    truncation. Safely convert second-resolution timestamps to milliseconds
+    before opening the file: Parquet has no seconds unit, and PyArrow 19's
+    implicit conversion can overflow silently. Reject out-of-range values.
+    Keep Arrow's embedded schema and pandas type information for
     timezone/type restoration; no schema sidecar or run metadata is created.
     Reading with the supplied table contract belongs to the paired reader.
 
@@ -66,6 +69,17 @@ def write_parquet_dataset(
         ) from err
 
     table = pa.Table.from_pandas(df, preserve_index=False, safe=True)
+    for position, field in enumerate(table.schema):
+        if pa.types.is_timestamp(field.type) and field.type.unit == "s":
+            # Preflight the conversion Parquet would otherwise perform unchecked.
+            target = pa.timestamp("ms", tz=field.type.tz)
+            try:
+                values = table.column(position).cast(target, safe=True)
+            except pa.ArrowInvalid as err:
+                raise pa.ArrowInvalid(
+                    f"Parquet column {field.name!r} cannot be stored as {target}: {err}"
+                ) from err
+            table = table.set_column(position, field.with_type(target), values)
     pq.write_table(
         table,
         destination,
