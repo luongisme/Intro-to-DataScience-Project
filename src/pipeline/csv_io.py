@@ -1,5 +1,6 @@
 """Schema-aware CSV I/O using the shared reversible text-cell codec."""
 
+from datetime import timezone
 from pathlib import Path
 from typing import Union
 
@@ -66,11 +67,24 @@ def write_csv_dataset(
                     f"CSV column '{column}' has unsupported floating precision: {dtype}."
                 )
             values = values.astype("Float64")
+        elif pd.api.types.is_datetime64_any_dtype(dtype):
+            # Format wall time and UTC offset separately to retain all nanoseconds.
+            timestamps = []
+            for value in values:
+                if pd.isna(value):
+                    timestamps.append(pd.NA)
+                elif value.tzinfo is None:
+                    timestamps.append(str(value))
+                else:
+                    offset = str(timezone(value.utcoffset())).removeprefix("UTC")
+                    timestamps.append(f"{value.tz_localize(None)}{offset or '+00:00'}")
+            values = pd.Series(
+                timestamps, dtype="string", index=values.index, name=values.name
+            )
         elif not (
             isinstance(dtype, pd.StringDtype)
             or pd.api.types.is_integer_dtype(dtype)
             or pd.api.types.is_bool_dtype(dtype)
-            or pd.api.types.is_datetime64_any_dtype(dtype)
         ):
             raise ValueError(f"CSV column '{column}' has unsupported dtype: {dtype}.")
         if not isinstance(values.dtype, pd.StringDtype):
