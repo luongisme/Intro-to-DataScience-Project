@@ -4,17 +4,17 @@ from dataclasses import replace
 from typing import List, Mapping, Sequence
 import pandas as pd
 
-from src.pipeline.normalizer import normalize_table_types
+from pipeline.contracts.normalizer import normalize_table_types
 from src.pipeline.planner import MERGE_TABLE_SPECS, build_combination_plan
-from src.pipeline.schema import (
+from pipeline.contracts.schema import (
     EXPECTED_FINAL_COLUMNS,
     JoinSpec,
     MergeResult,
     TableSchema,
     build_source_schema,
 )
-from src.pipeline.schema_derivation import derive_join_schema
-from src.pipeline.validator import (
+from pipeline.contracts.schema_derivation import derive_join_schema
+from pipeline.contracts.validator import (
     validate_foreign_keys,
     validate_table_contract,
 )
