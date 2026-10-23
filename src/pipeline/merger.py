@@ -1,7 +1,7 @@
 """Merge logic for combining Olist tables into a single item-level DataFrame."""
 
 import logging
-from typing import List, Set
+from typing import List, Mapping, Sequence, Set
 import pandas as pd
 
 from src.pipeline.normalizer import normalize_table_types
@@ -159,6 +159,119 @@ def execute_join(
                 "output_schema": True,
                 "output_constraints": True,
                 "row_count_checked": expected_rows is not None,
+            },
+        },
+    )
+
+
+def execute_join_plan(
+    base: str,
+    joins: Sequence[JoinSpec],
+    tables: Mapping[str, pd.DataFrame],
+    schemas: Mapping[str, TableSchema],
+) -> MergeResult:
+    """Execute an ordered join plan using named canonical tables and schemas.
+
+    Inspect only the base and referenced right tables. Validate their contracts
+    and preflight the entire schema sequence before performing the first join.
+    Then delegate every step to execute_join; carry each resulting table and
+    schema into the next step without reimplementing joining or validation.
+    Preserve explicit join order, including repeated use of a named source
+    when its selected/renamed columns form a valid sequence.
+
+    Return the final data/schema plus source shapes, join order and per-step
+    reports in memory. An empty plan returns independent copies of the checked
+    base data and schema. Do not infer global row preservation: each step
+    enforces only its own guarantees. Input tables/configuration are unchanged.
+    Do not load/save data, reorder the plan, select bridge tables or clean rows.
+
+    Args:
+        base: Name of the initial table in both input mappings.
+        joins: JoinSpec sequence, executed exactly in the supplied order.
+        tables: Already loaded canonical DataFrames indexed by source name.
+        schemas: Corresponding TableSchema contracts; extra entries are ignored.
+
+    Raises:
+        TypeError: If arguments or plan steps have unexpected types.
+        ValueError: If inputs, schema sequence or table constraints are invalid.
+        pandas.errors.MergeError: If a step violates its declared cardinality.
+    """
+    if not isinstance(base, str):
+        raise TypeError("The join-plan base must be a table name.")
+    if not base.strip():
+        raise ValueError("The join-plan base must be a non-empty table name.")
+    if isinstance(joins, (str, bytes)) or not isinstance(joins, Sequence):
+        raise TypeError("joins must be a sequence of JoinSpec objects.")
+    if not isinstance(tables, Mapping) or not isinstance(schemas, Mapping):
+        raise TypeError("tables and schemas must be mappings indexed by source name.")
+    steps = list(joins)
+    for position, join in enumerate(steps, 1):
+        if not isinstance(join, JoinSpec):
+            raise TypeError(f"Join plan step {position} must be a JoinSpec.")
+        if not isinstance(join.table, str) or not join.table.strip():
+            raise ValueError(f"Join plan step {position} requires a non-empty table name.")
+    required = list(dict.fromkeys([base] + [join.table for join in steps]))
+    missing_tables = [name for name in required if name not in tables]
+    missing_schemas = [name for name in required if name not in schemas]
+    if missing_tables or missing_schemas:
+        raise ValueError(
+            f"Missing join-plan inputs: tables={missing_tables}, schemas={missing_schemas}."
+        )
+    for name in required:
+        validate_table_contract(tables[name], schemas[name], table_name=name)
+    planned_schema = schemas[base]
+    for position, join in enumerate(steps, 1):
+        try:
+            planned_schema = derive_join_schema(planned_schema, schemas[join.table], join)
+        except (TypeError, ValueError) as err:
+            raise type(err)(
+                f"Join plan step {position} ('{join.table}') has an invalid schema: {err}"
+            ) from err
+
+    current = tables[base].copy(deep=True)
+    source_schema = schemas[base]
+    current_schema = TableSchema(
+        columns=list(source_schema.columns),
+        dtypes=dict(source_schema.dtypes),
+        unique_key=list(source_schema.unique_key),
+        non_nullable_columns=list(source_schema.non_nullable_columns),
+    )
+    reports = []
+    for position, join in enumerate(steps, 1):
+        try:
+            result = execute_join(
+                current,
+                tables[join.table],
+                current_schema,
+                schemas[join.table],
+                join,
+                left_table_name=base,
+            )
+        except (TypeError, ValueError) as err:
+            raise type(err)(f"Join plan step {position} ('{join.table}') failed: {err}") from err
+        current, current_schema = result.data, result.schema
+        reports.append(result.report)
+    if current_schema != planned_schema:
+        raise ValueError("Executed join-plan schema differs from its preflight contract.")
+    validate_table_contract(current, current_schema, table_name="plan_result")
+    return MergeResult(
+        data=current,
+        schema=current_schema,
+        report={
+            "base": base,
+            "tables": required,
+            "join_order": [join.table for join in steps],
+            "input_shapes": {
+                name: {"rows": len(tables[name]), "columns": len(tables[name].columns)}
+                for name in required
+            },
+            "output_rows": len(current),
+            "output_columns": len(current.columns),
+            "steps": reports,
+            "validation": {
+                "source_contracts": True,
+                "plan_schema": True,
+                "output_contract": True,
             },
         },
     )
