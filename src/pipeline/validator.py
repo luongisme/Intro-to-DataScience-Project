@@ -1,6 +1,7 @@
 """Runtime validation layer: Hard checks (raise) and Soft checks (warnings)."""
 
 import logging
+from numbers import Integral
 from typing import Dict, Optional, Sequence
 import pandas as pd
 
@@ -286,6 +287,90 @@ def validate_foreign_keys(
             f"{report['invalid_key_rows']} null or blank key row(s)."
         )
     return report
+
+
+def validate_table_contract(
+    df: pd.DataFrame,
+    schema: TableSchema,
+    *,
+    table_name: str = "dataset",
+    expected_rows: Optional[int] = None,
+) -> None:
+    """Validate a complete table contract without conversion or mutation.
+
+    Reuse validate_table_schema for exact columns, order and dtypes, including
+    datetime precision. Reuse validate_source_keys only when unique_key is
+    declared: its components must be non-null, non-blank and unique together.
+    An empty unique_key means no uniqueness constraint, even for registered
+    table names. Check other non_nullable_columns for missing values only;
+    blank non-key attributes are not interpreted as missing or cleaned here.
+
+    Check row count only when expected_rows is supplied explicitly by a caller
+    that knows the required count. Do not assume a full-dataset benchmark or
+    row preservation for every join. Empty tables are valid when their typed
+    columns satisfy the contract and any requested count is zero.
+
+    This function validates a table, including a merge result, rather than
+    relationships to other tables. Foreign keys and join cardinality remain
+    separate checks. Do not fill values, drop rows, normalize dtypes, read or
+    save files. Return None on success and raise on the first failed check.
+
+    Raises:
+        TypeError: If df, schema, table_name or expected_rows has an invalid type.
+        ValueError: If declarations, structure, values or row counts are invalid.
+    """
+    if not isinstance(table_name, str):
+        raise TypeError("table_name must be a string.")
+    if not table_name.strip():
+        raise ValueError("table_name must be a non-empty string.")
+    if expected_rows is not None:
+        if isinstance(expected_rows, bool) or not isinstance(expected_rows, Integral):
+            raise TypeError("expected_rows must be a non-negative integer or None.")
+        if expected_rows < 0:
+            raise ValueError("expected_rows must be non-negative.")
+    if not isinstance(schema, TableSchema):
+        raise TypeError(f"Schema for '{table_name}' must be a TableSchema.")
+    for field_name in ("columns", "unique_key", "non_nullable_columns"):
+        declared = getattr(schema, field_name)
+        if isinstance(declared, str) or not isinstance(declared, Sequence):
+            raise ValueError(
+                f"Schema field '{field_name}' for '{table_name}' must be a sequence of names."
+            )
+        if not all(isinstance(name, str) and name.strip() for name in declared):
+            raise ValueError(
+                f"Schema field '{field_name}' for '{table_name}' requires non-empty string names."
+            )
+        if len(declared) != len(set(declared)):
+            raise ValueError(
+                f"Schema field '{field_name}' for '{table_name}' declares duplicate names."
+            )
+        if field_name != "columns":
+            missing = [name for name in declared if name not in schema.columns]
+            if missing:
+                raise ValueError(
+                    f"Schema field '{field_name}' for '{table_name}' references "
+                    f"missing columns: {missing}."
+                )
+    if not isinstance(schema.dtypes, dict):
+        raise ValueError(f"Schema dtypes for '{table_name}' must be a dictionary.")
+    if not all(isinstance(dtype, str) and dtype.strip() for dtype in schema.dtypes.values()):
+        raise ValueError(f"Schema dtypes for '{table_name}' must be non-empty strings.")
+
+    validate_table_schema(df, schema, table_name=table_name)
+    if expected_rows is not None and len(df) != expected_rows:
+        raise ValueError(
+            f"Table '{table_name}' has an unexpected row count: "
+            f"expected {int(expected_rows)}, got {len(df)}."
+        )
+    if schema.unique_key:
+        validate_source_keys(df, table_name, key_columns=schema.unique_key)
+    remaining = [
+        name for name in schema.non_nullable_columns if name not in schema.unique_key
+    ]
+    null_counts = df[remaining].isna().sum()
+    missing = {name: int(count) for name, count in null_counts.items() if count}
+    if missing:
+        raise ValueError(f"Table '{table_name}' violates non-null constraints: {missing}.")
 
 
 class MergeValidator:
