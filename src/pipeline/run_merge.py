@@ -7,10 +7,13 @@ from typing import List
 import pandas as pd
 
 from src.paths import INTERIM_DIR
+from src.pipeline.dataset_io import save_dataset
 from src.pipeline.loader import load_table
 from src.pipeline.merger import OlistDataMerger
+from src.pipeline.registry import FULL_DATASET_NAME
 from src.pipeline.schema import (
     CUSTOMERS_SPEC,
+    FULL_MERGE_SCHEMA,
     ORDER_ITEMS_SPEC,
     ORDERS_SPEC,
     PRODUCTS_SPEC,
@@ -45,31 +48,34 @@ def _load_and_prepare(spec: TableLoadSpec) -> pd.DataFrame:
 
 
 def save_merged_dataset(merged_df: pd.DataFrame, output_dir: Path) -> Path:
-    """Save DataFrame to processed folder as Parquet with CSV fallback.
+    """Save the full merged table through the shared dataset storage workflow.
+
+    Keep the existing positional/keyword arguments and Path return contract.
+    Use FULL_MERGE_SCHEMA and FULL_DATASET_NAME so the legacy entry point
+    retains the complete item-level dataset's contract and filename stem.
+    Use save_dataset directly for partial combinations or custom schemas.
+
+    Delegate validation before directory creation, atomic file replacement,
+    Parquet-to-CSV fallback, notifications and error reporting to save_dataset.
+    Do not normalize/clean inputs or maintain a separate writer/fallback here.
 
     Args:
-        merged_df: Merged output DataFrame.
-        output_dir: Destination directory (PROCESSED_DIR).
+        merged_df: Full merged table already satisfying FULL_MERGE_SCHEMA.
+        output_dir: Destination directory, created after input validation.
 
     Returns:
-        Path: Path to saved file.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = output_dir / "merged_order_items.parquet"
+        Actual saved Parquet or CSV path under the legacy full dataset name.
 
-    try:
-        merged_df.to_parquet(parquet_path, index=False, engine="pyarrow")
-        logger.info("Successfully saved output as Parquet to: %s", parquet_path)
-        return parquet_path
-    except (ImportError, ModuleNotFoundError) as err:
-        csv_path = output_dir / "merged_order_items.csv"
-        logger.warning(
-            "pyarrow engine not available (%s). Falling back to CSV: %s",
-            err,
-            csv_path,
-        )
-        merged_df.to_csv(csv_path, index=False)
-        return csv_path
+    Raises:
+        TypeError: If input argument types are invalid.
+        ValueError: If the full table contract or output path is invalid.
+        OSError: If the shared output directory cannot be created/used.
+        RuntimeError: If both format-specific atomic save attempts fail.
+    """
+    return save_dataset(
+        merged_df, output_dir, FULL_MERGE_SCHEMA, dataset_name=FULL_DATASET_NAME
+    )
+
 
 def run_pipeline() -> pd.DataFrame:
     """Execute end-to-end data merge pipeline."""
