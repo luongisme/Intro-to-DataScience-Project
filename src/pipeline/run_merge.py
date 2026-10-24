@@ -9,19 +9,12 @@ from src.paths import INTERIM_DIR
 from src.pipeline.api import merge_data
 from src.pipeline.io.dataset_io import save_dataset
 from src.pipeline.io.loader import load_table
-from src.pipeline.merging.merger import OlistDataMerger
 from src.pipeline.merging.planner import MERGE_TABLE_SPECS
 from src.pipeline.merging.registry import FULL_DATASET_NAME
 from src.pipeline.contracts.schema import (
-    CUSTOMERS_SPEC,
     FULL_MERGE_SCHEMA,
-    ORDER_ITEMS_SPEC,
-    ORDERS_SPEC,
-    PRODUCTS_SPEC,
-    SELLERS_SPEC,
     TableLoadSpec,
 )
-from src.pipeline.contracts.validator import MergeValidator
 
 logging.basicConfig(
     level=logging.INFO,
