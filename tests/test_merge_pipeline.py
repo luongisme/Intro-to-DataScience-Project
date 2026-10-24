@@ -379,3 +379,26 @@ def test_pipeline_saves_empty_full_dataset(synthetic_pipeline_dirs):
 
     reloaded_df = load_data(FULL_DATASET_NAME, stage="interim")
     pd.testing.assert_frame_equal(reloaded_df, expected_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_falls_back_to_csv(synthetic_pipeline_dirs, monkeypatch):
+    """Save nonempty CSV after a Parquet failure and restore the typed data."""
+    parquet_writer = Mock(side_effect=OSError("Simulated Parquet write failure"))
+    monkeypatch.setattr(
+        "src.pipeline.io.dataset_io.write_parquet_dataset", parquet_writer
+    )
+
+    merged_df = run_pipeline()
+
+    parquet_writer.assert_called_once()
+    assert merged_df.shape == (3, len(FULL_MERGE_SCHEMA.columns))
+    output_dir = synthetic_pipeline_dirs["interim"]
+    csv_path = output_dir / f"{FULL_DATASET_NAME}.csv"
+    assert csv_path.is_file()
+    assert list(output_dir.iterdir()) == [csv_path]
+
+    reloaded_df = load_data(
+        FULL_DATASET_NAME, stage="interim", file_format="csv"
+    )
+    pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
