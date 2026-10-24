@@ -15,7 +15,6 @@ from src.pipeline.contracts.schema import (
     EXPECTED_FINAL_COLUMNS,
     FULL_MERGE_SCHEMA,
     ORDER_ITEMS_SPEC,
-    TableLoadSpec,
 )
 from src.pipeline.contracts.validator import MergeValidator
 
