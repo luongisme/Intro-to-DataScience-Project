@@ -1,4 +1,4 @@
-"""Runtime validation layer: Hard checks (raise) and Soft checks (warnings)."""
+"""Table schema, key and merge integrity validation."""
 
 import logging
 from numbers import Integral
@@ -7,7 +7,6 @@ import pandas as pd
 
 from src.pipeline.contracts.schema import (
     ALL_TIMESTAMP_COLUMNS,
-    BENCHMARK_ROW_COUNT,
     EXPECTED_FINAL_COLUMNS,
     FULL_MERGE_SCHEMA,
     JoinSpec,
