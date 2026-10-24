@@ -8,9 +8,11 @@ import pytest
 from src.paths import RAW_DIR
 from src.data_loader import DATASETS, load_data
 from src.pipeline.merging.merger import OlistDataMerger
+from src.pipeline.merging.registry import FULL_DATASET_NAME
 from src.pipeline.run_merge import _load_and_prepare, run_pipeline
 from src.pipeline.contracts.schema import (
     EXPECTED_FINAL_COLUMNS,
+    FULL_MERGE_SCHEMA,
     ORDER_ITEMS_SPEC,
     TableLoadSpec,
 )
@@ -305,8 +307,33 @@ REAL_FILES_PRESENT = all(
     not REAL_FILES_PRESENT,
     reason="Real Olist CSV files not present in data/raw/",
 )
-def test_integration_pipeline_on_real_files():
+def test_integration_pipeline_on_real_files(tmp_path: Path, monkeypatch):
+    """Verify the real full pipeline and saved output in an isolated directory."""
+    output_dir = tmp_path / "interim"
+    monkeypatch.setattr("src.pipeline.run_merge.INTERIM_DIR", output_dir)
+    monkeypatch.setattr("src.data_loader.INTERIM_DIR", output_dir)
+
     merged_df = run_pipeline()
-    assert len(merged_df) == 112650
-    assert len(merged_df.columns) == 25
+
+    assert isinstance(merged_df, pd.DataFrame)
+    assert merged_df.shape == (112650, 25)
     assert list(merged_df.columns) == EXPECTED_FINAL_COLUMNS
+    assert merged_df["order_id"].nunique() == 98666
+    assert not merged_df.duplicated(FULL_MERGE_SCHEMA.unique_key).any()
+    assert merged_df[FULL_MERGE_SCHEMA.non_nullable_columns].notna().all().all()
+    for column, dtype in FULL_MERGE_SCHEMA.dtypes.items():
+        expected_dtype = pd.api.types.pandas_dtype(dtype)
+        assert pd.api.types.is_dtype_equal(merged_df[column].dtype, expected_dtype), column
+
+    # Read the actual saved format, including a successful CSV fallback.
+    saved_paths = [
+        output_dir / f"{FULL_DATASET_NAME}.{file_format}"
+        for file_format in ("parquet", "csv")
+        if (output_dir / f"{FULL_DATASET_NAME}.{file_format}").is_file()
+    ]
+    assert len(saved_paths) == 1, f"Expected one saved dataset, found {saved_paths}"
+    saved_format = saved_paths[0].suffix[1:]
+    reloaded_df = load_data(
+        FULL_DATASET_NAME, stage="interim", file_format=saved_format
+    )
+    pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
