@@ -1074,7 +1074,7 @@ All six use function scope, providing fresh inputs per test. They are supplied b
 F5 starts with pandas-inferred dtypes; the adapter/typed loader normalizes them. Initial fixture timestamps/string columns are not assumed to be the exact canonical dtypes.
 
 <a id="tests-contracts"></a>
-### A.3. `../../tests/test_merge_contracts.py`
+### A.3. `../../tests/merge/test_merge_contracts.py`
 
 | Test | Inputs | Expected evidence |
 |---|---|---|
@@ -1092,7 +1092,7 @@ F5 starts with pandas-inferred dtypes; the adapter/typed loader normalizes them.
 | `test_schema_derivation_preserves_projection_order_and_nullable_precision` | None | Source order/nullable widths/key constraints and key dtype rejection |
 
 <a id="tests-joins"></a>
-### A.4. `../../tests/test_merge_joins.py`
+### A.4. `../../tests/merge/test_merge_joins.py`
 
 **Reference helpers:**
 
@@ -1117,7 +1117,7 @@ MISSING is the oracle sentinel. LEFT_SCHEMA and RIGHT_SCHEMA describe test input
 | `test_shared_typed_keys_keep_precision_and_never_match_nulls` | how, dtype, left_keys, right_keys | Shared UInt64/uint64/bool/float/datetime keys preserve dtype/value without null matching |
 
 <a id="tests-presets"></a>
-### A.5. `../../tests/test_merge_presets.py`
+### A.5. `../../tests/merge/test_merge_presets.py`
 
 **Fixtures and helpers:**
 
@@ -1144,7 +1144,7 @@ TABLES, SELECTIONS, and RIGHT_KEYS define the five names, 26 selections, and ora
 | `test_typed_loader_rejects_invalid_raw_sources` | P, defect | Reject duplicate customers, malformed time/price, or missing columns before output |
 
 <a id="tests-storage"></a>
-### A.6. `../../tests/test_merge_storage.py`
+### A.6. `../../tests/merge/test_merge_storage.py`
 
 The function-scoped fixture `storage_case()` takes no arguments and returns a frame/schema tuple. Its eight rows include extreme nullable integers, nullable floats/bools, signed zero, ns/timezone timestamps, empty/NA/token/Unicode/CRLF/NUL text, a custom index, and nonserializable attrs. It verifies storage boundaries rather than providing analysis data.
 
@@ -1178,7 +1178,7 @@ The function-scoped fixture `storage_case()` takes no arguments and returns a fr
 Writer callbacks and the child-process script belong to their enclosing tests. They do not introduce a separate project test runner.
 
 <a id="tests-reporting"></a>
-### A.7. `../../tests/test_merge_reporting.py`
+### A.7. `../../tests/merge/test_merge_reporting.py`
 
 The function-scoped fixture `report_inputs()` takes no arguments and returns left/right frames and schemas. Two left rows and two right rows with key A produce four output rows but only two matched left rows.
 
@@ -1190,7 +1190,7 @@ The function-scoped fixture `report_inputs()` takes no arguments and returns lef
 | `test_report_rejects_invalid_container_types` | defect | Invalid result/data/schema/report raises TypeError |
 
 <a id="tests-pipeline"></a>
-### A.8. `../../tests/test_merge_pipeline.py`
+### A.8. `../../tests/merge/test_merge_pipeline.py`
 
 Adapter tests retain the legacy interface; pipeline tests exercise the strict API. REAL_FILES_PRESENT checks five sources at import to skip the real-data test when needed.
 
