@@ -345,3 +345,93 @@ def profile_temporal_frequencies(series: pd.Series, frequency: str = "month") ->
     else:
         raise ValueError("frequency must be 'month', 'date', 'weekday' or 'hour'.")
     return _frequency_table(series, counts)
+
+
+def _missing_mask(df: pd.DataFrame, columns: Sequence[str] | None) -> pd.DataFrame:
+    """Validate a non-empty column selection and return its missingness mask."""
+    require_columns(df)
+    selected = list(df.columns) if columns is None else columns
+    require_columns(df, selected)
+    if not selected:
+        raise ValueError("Select at least one column for missingness profiling.")
+    return df.loc[:, list(selected)].isna()
+
+
+def profile_missing_patterns(
+    df: pd.DataFrame,
+    columns: Sequence[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Return missing-count frequencies and exact co-missing column patterns.
+
+    Default to all supplied columns. Missing means isna(), not blank text.
+    Each input row contributes once, even with a duplicate index. The count
+    distribution includes every possible missing count (including zero).
+    Pattern tuples preserve selected column order; () means complete within
+    the selection. All percentages use all input rows at the supplied grain.
+    Empty input has no observed patterns and undefined percentages.
+    No row is removed or changed in the input.
+    """
+    mask = _missing_mask(df, columns)
+    total = len(mask)
+    counts = mask.sum(axis=1).value_counts(sort=False).reindex(range(len(mask.columns) + 1), fill_value=0)
+    distribution = pd.DataFrame({
+        "missing_columns_per_row": counts.index,
+        "rows": counts.to_numpy(),
+    })
+    distribution["total_rows"] = total
+    distribution["pct_all"] = 100 * distribution["rows"] / total if total else float("nan")
+    records = []
+    for flags, count in mask.value_counts(sort=True, dropna=False).items():
+        missing_columns = tuple(column for column, missing in zip(mask.columns, flags) if missing)
+        records.append([missing_columns, len(missing_columns), int(count)])
+    patterns = pd.DataFrame(records, columns=["missing_columns", "missing_count", "rows"])
+    patterns["total_rows"] = total
+    patterns["pct_all"] = 100 * patterns["rows"] / total if total else float("nan")
+    return {"row_distribution": distribution, "patterns": patterns}
+
+
+def profile_paired_missingness(
+    df: pd.DataFrame,
+    columns: Sequence[str] | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Return all unordered missingness pairs and a directional percentage matrix.
+
+    For each pair, both_missing + left_only_missing + right_only_missing +
+    both_present equals input rows. Conditional percentages use missing rows
+    of the conditioning column, rather than all rows. Zero denominators yield
+    NaN. Matrix[row, column] means P(column missing | row missing), in percent;
+    its diagonal is 100 only when that row column has missing observations.
+    A single-column selection has an empty pair table and a 1x1 matrix.
+    These associations do not establish a cause or a missingness mechanism.
+    """
+    mask = _missing_mask(df, columns)
+    names = list(mask.columns)
+    missing_counts = mask.sum()
+    matrix = pd.DataFrame(
+        np.nan, index=pd.Index(names, name="Given missing"),
+        columns=pd.Index(names, name="Also missing"),
+    )
+    records = []
+    for i, left in enumerate(names):
+        left_missing = int(missing_counts[left])
+        matrix.loc[left, left] = 100.0 if left_missing else float("nan")
+        for right in names[i + 1:]:
+            right_missing = int(missing_counts[right])
+            both = int((mask[left] & mask[right]).sum())
+            right_given_left = 100 * both / left_missing if left_missing else float("nan")
+            left_given_right = 100 * both / right_missing if right_missing else float("nan")
+            records.append([
+                left, right, len(mask), both, left_missing - both, right_missing - both,
+                len(mask) - left_missing - right_missing + both,
+                left_missing, right_missing, right_given_left, left_given_right,
+            ])
+            matrix.loc[left, right] = right_given_left
+            matrix.loc[right, left] = left_given_right
+    return {
+        "pairs": pd.DataFrame(records, columns=[
+            "left", "right", "rows", "both_missing", "left_only_missing",
+            "right_only_missing", "both_present", "left_missing", "right_missing",
+            "right_missing_given_left_pct", "left_missing_given_right_pct",
+        ]),
+        "conditional_pct": matrix,
+    }

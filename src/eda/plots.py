@@ -156,3 +156,62 @@ def plot_numeric_boxplot(
     axes.grid(axis="x", alpha=0.2)
     axes.set_axisbelow(True)
     return figure, axes
+
+
+def plot_missingness_heatmap(
+    matrix: pd.DataFrame,
+    *,
+    title: str = "Conditional missingness",
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot a precomputed percentage matrix without computing missingness.
+
+    Accept unique row/column labels and real numeric values in [0, 100] or
+    NaN. Grey cells mark undefined denominators, not zero association. Display
+    one decimal place, using <0.1 / >99.9 for small nonzero boundary rates
+    instead of rounding them to 0 / 100. Preserve the original matrix. Caller
+    supplies grain/denominator context and controls display/close/save.
+    Empty matrices render a no-data message. Never change global styles.
+    """
+    require_columns(matrix)
+    if matrix.index.has_duplicates:
+        raise ValueError("Heatmap row labels must be unique.")
+    if any(
+        not pd.api.types.is_numeric_dtype(dtype)
+        or pd.api.types.is_bool_dtype(dtype)
+        or pd.api.types.is_complex_dtype(dtype)
+        for dtype in matrix.dtypes
+    ):
+        raise TypeError("Heatmap cells must be real numeric percentages or NaN.")
+    values = matrix.to_numpy(dtype=float, na_value=np.nan)
+    if np.isinf(values).any() or ((values < 0) | (values > 100)).any():
+        raise ValueError("Heatmap percentages must be between 0 and 100, or NaN.")
+    figure, axes = _get_axes(ax, (max(7, len(matrix.columns) * 0.7 + 4), max(4, len(matrix) * 0.5 + 2)))
+    axes.set_title(f"{title}\nGrey = undefined denominator", fontsize=10)
+    if matrix.empty:
+        axes.text(0.5, 0.5, "No selected missingness cells", ha="center", va="center", transform=axes.transAxes)
+        return figure, axes
+    cmap = plt.get_cmap("Blues").with_extremes(bad="#e6e6e6")
+    image = axes.imshow(np.ma.masked_invalid(values), cmap=cmap, vmin=0, vmax=100, aspect="auto")
+    axes.set_xticks(range(len(matrix.columns)), matrix.columns, rotation=55, ha="right", fontsize=8)
+    axes.set_yticks(range(len(matrix.index)), matrix.index, fontsize=8)
+    axes.set_xlabel(matrix.columns.name or "Column")
+    axes.set_ylabel(matrix.index.name or "Row")
+    for row in range(len(matrix)):
+        for column in range(len(matrix.columns)):
+            value = values[row, column]
+            if np.isnan(value):
+                label = "—"
+            elif 0 < value < 0.1:
+                label = "<0.1"
+            elif 99.9 < value < 100:
+                label = ">99.9"
+            else:
+                label = f"{value:.1f}"
+            axes.text(
+                column, row, label,
+                ha="center", va="center", fontsize=8,
+                color="white" if np.isfinite(value) and value >= 60 else "black",
+            )
+    figure.colorbar(image, ax=axes, label="Percent")
+    return figure, axes

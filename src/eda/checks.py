@@ -152,3 +152,54 @@ def build_entity_views(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         ).copy(deep=True)
         for spec in SOURCE_SPECS
     }
+
+
+def summarize_condition_by_group(
+    df: pd.DataFrame,
+    condition: pd.Series,
+    group_columns: Sequence[str],
+) -> pd.DataFrame:
+    """Count a temporary boolean condition by one or more observed groups.
+
+    Require a bool/nullable-boolean Series with the same index and row order
+    as df. Missing condition values remain unknown, not False. Return group
+    rows, evaluated/unknown/affected counts, affected_pct_evaluated (evaluated
+    denominator) and affected_pct_all (confirmed True divided by all group
+    rows). An all-unknown group has an undefined evaluated percentage.
+
+    Retain null group keys, literal blanks and observed categorical levels;
+    do not create combinations that never occur. Group percentages describe
+    the supplied row grain, not distinct entities inferred from column names.
+    Empty input returns the same output columns with no observed groups.
+    No loading, transformation of input columns, display or saving occurs.
+    """
+    require_columns(df, group_columns)
+    if not group_columns:
+        raise ValueError("Select at least one grouping column.")
+    metrics = [
+        "rows", "evaluated_rows", "unknown_rows", "affected_rows",
+        "affected_pct_evaluated", "affected_pct_all",
+    ]
+    if set(group_columns).intersection(metrics):
+        raise ValueError(f"Grouping names must not overlap output metrics: {metrics}.")
+    if not isinstance(condition, pd.Series) or not pd.api.types.is_bool_dtype(condition.dtype):
+        raise TypeError("condition must be a bool or nullable-boolean pandas Series.")
+    if not condition.index.equals(df.index):
+        raise ValueError("condition must have the same index and row order as df.")
+    counts = pd.DataFrame({
+        "rows": 1,
+        "evaluated_rows": condition.notna().to_numpy(dtype="int64"),
+        "affected_rows": condition.fillna(False).to_numpy(dtype="int64"),
+    }, index=df.index)
+    result = counts.groupby(
+        [df[column] for column in group_columns],
+        dropna=False, sort=False, observed=True,
+    ).sum().reset_index()
+    result["unknown_rows"] = result["rows"] - result["evaluated_rows"]
+    result["affected_pct_evaluated"] = (
+        100 * result["affected_rows"] / result["evaluated_rows"].where(result["evaluated_rows"].ne(0))
+    )
+    result["affected_pct_all"] = (
+        100 * result["affected_rows"] / result["rows"].where(result["rows"].ne(0))
+    )
+    return result.loc[:, [*group_columns, *metrics]]
