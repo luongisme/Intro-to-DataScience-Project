@@ -359,3 +359,23 @@ def test_pipeline_rejects_missing_customer_before_saving(
 
     saver.assert_not_called()
     assert not synthetic_pipeline_dirs["interim"].exists()
+
+
+@pytest.mark.integration
+def test_pipeline_saves_empty_full_dataset(synthetic_pipeline_dirs):
+    """Save and reload a header-only full dataset with its declared dtypes."""
+    for source_path in synthetic_pipeline_dirs["raw"].glob("*.csv"):
+        pd.read_csv(source_path, nrows=0).to_csv(
+            source_path, index=False, encoding="utf-8"
+        )
+
+    merged_df = run_pipeline()
+    expected_df = pd.DataFrame({
+        column: pd.Series([], dtype=FULL_MERGE_SCHEMA.dtypes[column])
+        for column in FULL_MERGE_SCHEMA.columns
+    })
+    pd.testing.assert_frame_equal(merged_df, expected_df, check_exact=True)
+    assert synthetic_pipeline_dirs["interim"].is_dir()
+
+    reloaded_df = load_data(FULL_DATASET_NAME, stage="interim")
+    pd.testing.assert_frame_equal(reloaded_df, expected_df, check_exact=True)
