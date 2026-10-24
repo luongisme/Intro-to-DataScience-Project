@@ -424,3 +424,28 @@ def test_pipeline_propagates_merge_failure_before_saving(
     saver.assert_not_called()
     assert not synthetic_pipeline_dirs["interim"].exists()
     assert "PIPELINE COMPLETED SUCCESSFULLY" not in caplog.text
+
+
+@pytest.mark.integration
+def test_pipeline_propagates_save_failure(
+    synthetic_pipeline_dirs, monkeypatch, caplog
+):
+    """Propagate the original save error after merging without reporting success."""
+    save_error = RuntimeError("Simulated dataset save failure")
+    saver = Mock(side_effect=save_error)
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with caplog.at_level("INFO", logger="olist_pipeline"):
+        with pytest.raises(RuntimeError) as caught:
+            run_pipeline()
+
+    assert caught.value is save_error
+    saver.assert_called_once()
+    merged_df = saver.call_args.args[0]
+    assert isinstance(merged_df, pd.DataFrame)
+    assert merged_df.shape == (3, len(FULL_MERGE_SCHEMA.columns))
+    assert saver.call_args.kwargs == {
+        "output_dir": synthetic_pipeline_dirs["interim"]
+    }
+    assert not synthetic_pipeline_dirs["interim"].exists()
+    assert "PIPELINE COMPLETED SUCCESSFULLY" not in caplog.text
