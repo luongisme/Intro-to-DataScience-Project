@@ -402,3 +402,25 @@ def test_pipeline_falls_back_to_csv(synthetic_pipeline_dirs, monkeypatch):
         FULL_DATASET_NAME, stage="interim", file_format="csv"
     )
     pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_propagates_merge_failure_before_saving(
+    synthetic_pipeline_dirs, monkeypatch, caplog
+):
+    """Propagate the original merge error without saving or reporting success."""
+    merge_error = RuntimeError("Simulated merge failure")
+    merger = Mock(side_effect=merge_error)
+    saver = Mock()
+    monkeypatch.setattr("src.pipeline.run_merge.merge_data", merger)
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with caplog.at_level("INFO", logger="olist_pipeline"):
+        with pytest.raises(RuntimeError) as caught:
+            run_pipeline()
+
+    assert caught.value is merge_error
+    merger.assert_called_once()
+    saver.assert_not_called()
+    assert not synthetic_pipeline_dirs["interim"].exists()
+    assert "PIPELINE COMPLETED SUCCESSFULLY" not in caplog.text
