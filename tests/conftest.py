@@ -1,7 +1,11 @@
 """Pytest fixtures with small synthetic DataFrames for unit testing."""
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
+
+from src.data_loader import DATASETS
 
 
 @pytest.fixture
@@ -73,3 +77,39 @@ def synthetic_sellers() -> pd.DataFrame:
             "seller_state": ["SP", "SP"],
         }
     )
+
+
+@pytest.fixture
+def synthetic_pipeline_dirs(
+    tmp_path: Path,
+    monkeypatch,
+    synthetic_order_items,
+    synthetic_orders,
+    synthetic_customers,
+    synthetic_products,
+    synthetic_sellers,
+) -> dict[str, Path]:
+    """Provide isolated raw sources and interim output for full pipeline tests.
+
+    Reuse the small DataFrame fixtures to write UTF-8 raw CSV files. Route
+    production loading/saving to pytest's temporary directory. Leave the
+    interim directory absent so tests can verify failures happen before I/O.
+    The monkeypatch fixture restores all three paths after each test.
+    """
+    raw_dir = tmp_path / "raw"
+    interim_dir = tmp_path / "interim"
+    raw_dir.mkdir()
+    sources = {
+        "order_items": synthetic_order_items,
+        "orders": synthetic_orders,
+        "customers": synthetic_customers,
+        "products": synthetic_products,
+        "sellers": synthetic_sellers,
+    }
+    for name, frame in sources.items():
+        frame.to_csv(raw_dir / DATASETS[name], index=False, encoding="utf-8")
+
+    monkeypatch.setattr("src.data_loader.RAW_DIR", raw_dir)
+    monkeypatch.setattr("src.data_loader.INTERIM_DIR", interim_dir)
+    monkeypatch.setattr("src.pipeline.run_merge.INTERIM_DIR", interim_dir)
+    return {"raw": raw_dir, "interim": interim_dir}

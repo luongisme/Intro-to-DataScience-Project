@@ -1,20 +1,22 @@
 """Comprehensive Unit & Integration tests for Olist Merge Pipeline."""
 
 from pathlib import Path
+from unittest.mock import Mock
 import numpy as np
 import pandas as pd
 import pytest
 
 from src.paths import RAW_DIR
 from src.data_loader import DATASETS, load_data
-from src.pipeline.merger import OlistDataMerger
+from src.pipeline.merging.merger import OlistDataMerger
+from src.pipeline.merging.registry import FULL_DATASET_NAME
 from src.pipeline.run_merge import _load_and_prepare, run_pipeline
-from src.pipeline.schema import (
+from src.pipeline.contracts.schema import (
     EXPECTED_FINAL_COLUMNS,
+    FULL_MERGE_SCHEMA,
     ORDER_ITEMS_SPEC,
-    TableLoadSpec,
 )
-from src.pipeline.validator import MergeValidator
+from src.pipeline.contracts.validator import MergeValidator
 
 
 # 1. Multi-item order preservation
@@ -305,8 +307,144 @@ REAL_FILES_PRESENT = all(
     not REAL_FILES_PRESENT,
     reason="Real Olist CSV files not present in data/raw/",
 )
-def test_integration_pipeline_on_real_files():
+def test_integration_pipeline_on_real_files(tmp_path: Path, monkeypatch):
+    """Verify the real full pipeline and saved output in an isolated directory."""
+    output_dir = tmp_path / "interim"
+    monkeypatch.setattr("src.pipeline.run_merge.INTERIM_DIR", output_dir)
+    monkeypatch.setattr("src.data_loader.INTERIM_DIR", output_dir)
+
     merged_df = run_pipeline()
-    assert len(merged_df) == 112650
-    assert len(merged_df.columns) == 25
+
+    assert isinstance(merged_df, pd.DataFrame)
+    assert merged_df.shape == (112650, 25)
     assert list(merged_df.columns) == EXPECTED_FINAL_COLUMNS
+    assert merged_df["order_id"].nunique() == 98666
+    assert not merged_df.duplicated(FULL_MERGE_SCHEMA.unique_key).any()
+    assert merged_df[FULL_MERGE_SCHEMA.non_nullable_columns].notna().all().all()
+    for column, dtype in FULL_MERGE_SCHEMA.dtypes.items():
+        expected_dtype = pd.api.types.pandas_dtype(dtype)
+        assert pd.api.types.is_dtype_equal(merged_df[column].dtype, expected_dtype), column
+
+    # Read the actual saved format, including a successful CSV fallback.
+    saved_paths = [
+        output_dir / f"{FULL_DATASET_NAME}.{file_format}"
+        for file_format in ("parquet", "csv")
+        if (output_dir / f"{FULL_DATASET_NAME}.{file_format}").is_file()
+    ]
+    assert len(saved_paths) == 1, f"Expected one saved dataset, found {saved_paths}"
+    saved_format = saved_paths[0].suffix[1:]
+    reloaded_df = load_data(
+        FULL_DATASET_NAME, stage="interim", file_format=saved_format
+    )
+    pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_rejects_missing_customer_before_saving(
+    synthetic_pipeline_dirs,
+    synthetic_customers,
+    monkeypatch,
+):
+    """Reject missing customer links before invoking the dataset saver."""
+    customers_path = synthetic_pipeline_dirs["raw"] / DATASETS["customers"]
+    synthetic_customers.iloc[1:].to_csv(
+        customers_path, index=False, encoding="utf-8"
+    )
+    saver = Mock()
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with pytest.raises(ValueError, match="orphan customer_id"):
+        run_pipeline()
+
+    saver.assert_not_called()
+    assert not synthetic_pipeline_dirs["interim"].exists()
+
+
+@pytest.mark.integration
+def test_pipeline_saves_empty_full_dataset(synthetic_pipeline_dirs):
+    """Save and reload a header-only full dataset with its declared dtypes."""
+    for source_path in synthetic_pipeline_dirs["raw"].glob("*.csv"):
+        pd.read_csv(source_path, nrows=0).to_csv(
+            source_path, index=False, encoding="utf-8"
+        )
+
+    merged_df = run_pipeline()
+    expected_df = pd.DataFrame({
+        column: pd.Series([], dtype=FULL_MERGE_SCHEMA.dtypes[column])
+        for column in FULL_MERGE_SCHEMA.columns
+    })
+    pd.testing.assert_frame_equal(merged_df, expected_df, check_exact=True)
+    assert synthetic_pipeline_dirs["interim"].is_dir()
+
+    reloaded_df = load_data(FULL_DATASET_NAME, stage="interim")
+    pd.testing.assert_frame_equal(reloaded_df, expected_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_falls_back_to_csv(synthetic_pipeline_dirs, monkeypatch):
+    """Save nonempty CSV after a Parquet failure and restore the typed data."""
+    parquet_writer = Mock(side_effect=OSError("Simulated Parquet write failure"))
+    monkeypatch.setattr(
+        "src.pipeline.io.dataset_io.write_parquet_dataset", parquet_writer
+    )
+
+    merged_df = run_pipeline()
+
+    parquet_writer.assert_called_once()
+    assert merged_df.shape == (3, len(FULL_MERGE_SCHEMA.columns))
+    output_dir = synthetic_pipeline_dirs["interim"]
+    csv_path = output_dir / f"{FULL_DATASET_NAME}.csv"
+    assert csv_path.is_file()
+    assert list(output_dir.iterdir()) == [csv_path]
+
+    reloaded_df = load_data(
+        FULL_DATASET_NAME, stage="interim", file_format="csv"
+    )
+    pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_propagates_merge_failure_before_saving(
+    synthetic_pipeline_dirs, monkeypatch, caplog
+):
+    """Propagate the original merge error without saving or reporting success."""
+    merge_error = RuntimeError("Simulated merge failure")
+    merger = Mock(side_effect=merge_error)
+    saver = Mock()
+    monkeypatch.setattr("src.pipeline.run_merge.merge_data", merger)
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with caplog.at_level("INFO", logger="olist_pipeline"):
+        with pytest.raises(RuntimeError) as caught:
+            run_pipeline()
+
+    assert caught.value is merge_error
+    merger.assert_called_once()
+    saver.assert_not_called()
+    assert not synthetic_pipeline_dirs["interim"].exists()
+    assert "PIPELINE COMPLETED SUCCESSFULLY" not in caplog.text
+
+
+@pytest.mark.integration
+def test_pipeline_propagates_save_failure(
+    synthetic_pipeline_dirs, monkeypatch, caplog
+):
+    """Propagate the original save error after merging without reporting success."""
+    save_error = RuntimeError("Simulated dataset save failure")
+    saver = Mock(side_effect=save_error)
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with caplog.at_level("INFO", logger="olist_pipeline"):
+        with pytest.raises(RuntimeError) as caught:
+            run_pipeline()
+
+    assert caught.value is save_error
+    saver.assert_called_once()
+    merged_df = saver.call_args.args[0]
+    assert isinstance(merged_df, pd.DataFrame)
+    assert merged_df.shape == (3, len(FULL_MERGE_SCHEMA.columns))
+    assert saver.call_args.kwargs == {
+        "output_dir": synthetic_pipeline_dirs["interim"]
+    }
+    assert not synthetic_pipeline_dirs["interim"].exists()
+    assert "PIPELINE COMPLETED SUCCESSFULLY" not in caplog.text
