@@ -1,6 +1,7 @@
 """Comprehensive Unit & Integration tests for Olist Merge Pipeline."""
 
 from pathlib import Path
+from unittest.mock import Mock
 import numpy as np
 import pandas as pd
 import pytest
@@ -337,3 +338,24 @@ def test_integration_pipeline_on_real_files(tmp_path: Path, monkeypatch):
         FULL_DATASET_NAME, stage="interim", file_format=saved_format
     )
     pd.testing.assert_frame_equal(merged_df, reloaded_df, check_exact=True)
+
+
+@pytest.mark.integration
+def test_pipeline_rejects_missing_customer_before_saving(
+    synthetic_pipeline_dirs,
+    synthetic_customers,
+    monkeypatch,
+):
+    """Reject missing customer links before invoking the dataset saver."""
+    customers_path = synthetic_pipeline_dirs["raw"] / DATASETS["customers"]
+    synthetic_customers.iloc[1:].to_csv(
+        customers_path, index=False, encoding="utf-8"
+    )
+    saver = Mock()
+    monkeypatch.setattr("src.pipeline.run_merge.save_merged_dataset", saver)
+
+    with pytest.raises(ValueError, match="orphan customer_id"):
+        run_pipeline()
+
+    saver.assert_not_called()
+    assert not synthetic_pipeline_dirs["interim"].exists()
