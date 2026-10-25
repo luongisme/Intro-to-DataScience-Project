@@ -1,5 +1,6 @@
 """Cleaning contracts, transformations, workflow and inspection helpers."""
 
+from src.cleaning.filtering import filter_eligible_orders
 from src.cleaning.measurements import clean_physical_measurements
 from src.cleaning.presentation import format_cleaning_preview
 from src.cleaning.schema import CLEANED_DATASET_NAME, CLEANED_ORDER_ITEMS_SCHEMA
@@ -9,6 +10,7 @@ from src.cleaning.validation import assert_cleaned_roundtrip, validate_cleaning_
 from src.cleaning.workflow import clean_order_items, save_cleaned_data
 
 __all__ = [
+    "filter_eligible_orders",
     "CLEANED_DATASET_NAME",
     "CLEANED_ORDER_ITEMS_SCHEMA",
     "clean_order_items",

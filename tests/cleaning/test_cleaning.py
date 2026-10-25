@@ -21,6 +21,7 @@ from src.cleaning import (
     flag_timeline_issues,
     flag_deadline_issues,
     format_cleaning_preview,
+    filter_eligible_orders,
     inspect_text_fields,
     normalize_city_whitespace,
 )
@@ -618,4 +619,129 @@ def test_clean_save_reports_both_failures_and_preserves_previous_file(
     assert len(error.value.__cause__.exceptions) == 2
     assert saved.read_bytes() == previous
     assert not list(tmp_path.glob(".merge-*.tmp"))
+
+
+def test_order_filter_retains_valid_data_without_mutating_or_aliasing_input(cleaning_full_frame):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    before = inspected.copy(deep=True)
+    retained, details = filter_eligible_orders(inspected)
+
+    pd.testing.assert_frame_equal(retained, before, check_exact=True)
+    assert details["excluded_orders"].empty
+    assert details["reasons"]["affected_orders"].eq(0).all()
+    assert details["flow"].iloc[-1]["remaining_orders"] == 2
+    assert details["flow"].iloc[-1]["remaining_item_rows"] == 3
+    retained.iloc[0, retained.columns.get_loc("price")] += 1
+    pd.testing.assert_frame_equal(inspected, before, check_exact=True)
+
+
+@pytest.mark.parametrize("column,value,reason", [
+    ("order_status", "shipped", "not_delivered"),
+    ("order_approved_at", pd.NaT, "missing_required_timestamp"),
+    ("has_invalid_timeline", True, "has_invalid_timeline"),
+    ("has_invalid_physical_measurement", True, "has_invalid_physical_measurement"),
+    ("needs_deadline_review", True, "needs_deadline_review"),
+])
+def test_order_filter_excludes_all_items_when_one_item_fails(
+    cleaning_full_frame, column, value, reason,
+):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected.iloc[0, inspected.columns.get_loc(column)] = value
+    before = inspected.copy(deep=True)
+    retained, details = filter_eligible_orders(inspected)
+
+    assert retained["order_id"].tolist() == [inspected.iloc[2]["order_id"]]
+    assert retained.index.tolist() == [2]
+    reason_row = details["reasons"].set_index("reason").loc[reason]
+    assert reason_row["affected_orders"] == 1
+    assert reason_row["affected_item_rows"] == 2
+    excluded = details["excluded_orders"]
+    assert len(excluded) == 1 and excluded.iloc[0]["item_rows"] == 2
+    assert bool(excluded.iloc[0][reason])
+    pd.testing.assert_frame_equal(inspected, before, check_exact=True)
+
+
+@pytest.mark.parametrize("column", [
+    "order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date",
+    "order_delivered_customer_date", "order_estimated_delivery_date",
+])
+def test_order_filter_requires_all_core_and_estimated_delivery_timestamps(
+    cleaning_full_frame, column,
+):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected.iloc[2, inspected.columns.get_loc(column)] = pd.NaT
+    retained, details = filter_eligible_orders(inspected)
+    assert len(retained) == 2
+    assert details["reasons"].set_index("reason").loc[
+        "missing_required_timestamp", "affected_orders",
+    ] == 1
+
+
+def test_order_filter_counts_overlapping_reasons_without_double_counting_removals(cleaning_full_frame):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected.iloc[0, inspected.columns.get_loc("order_status")] = "canceled"
+    inspected.iloc[0, inspected.columns.get_loc("order_approved_at")] = pd.NaT
+    inspected.iloc[1, inspected.columns.get_loc("has_invalid_physical_measurement")] = True
+    inspected.iloc[2, inspected.columns.get_loc("needs_deadline_review")] = True
+    retained, details = filter_eligible_orders(inspected)
+    reasons = details["reasons"].set_index("reason")
+    flow = details["flow"].set_index("step")
+
+    assert retained.empty
+    assert reasons["affected_orders"].sum() == 4
+    assert len(details["excluded_orders"]) == 2
+    assert flow["removed_orders"].sum() == 2
+    assert flow["removed_item_rows"].sum() == 3
+    assert flow.loc["not_delivered", "removed_orders"] == 1
+    assert flow.loc["missing_required_timestamp", "removed_orders"] == 0
+    assert flow.loc["has_invalid_physical_measurement", "removed_orders"] == 0
+    assert flow.loc["needs_deadline_review", "removed_orders"] == 1
+    assert flow.iloc[-1]["remaining_orders"] == 0
+    assert flow.iloc[-1]["remaining_item_rows"] == 0
+    assert retained.dtypes.equals(inspected.dtypes)
+
+
+def test_order_filter_preserves_optional_nulls_and_zero_freight(cleaning_full_frame):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    for column in ["product_category_name", "product_weight_g"]:
+        inspected.iloc[0, inspected.columns.get_loc(column)] = pd.NA
+    before = inspected.copy(deep=True)
+    retained, details = filter_eligible_orders(inspected)
+    pd.testing.assert_frame_equal(retained, before, check_exact=True)
+    assert retained.iloc[1]["freight_value"] == 0.0
+    assert details["excluded_orders"].empty
+
+
+def test_order_filter_treats_missing_status_as_not_delivered(cleaning_full_frame):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected.iloc[2, inspected.columns.get_loc("order_status")] = pd.NA
+    retained, details = filter_eligible_orders(inspected)
+    assert len(retained) == 2
+    assert details["reasons"].set_index("reason").loc["not_delivered", "affected_orders"] == 1
+
+
+def test_order_filter_supports_empty_input_with_stable_reports(cleaning_full_frame):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    empty = inspected.iloc[:0]
+    retained, details = filter_eligible_orders(empty)
+    pd.testing.assert_frame_equal(retained, empty, check_exact=True)
+    assert len(details["reasons"]) == 5
+    assert len(details["flow"]) == 6
+    assert details["reasons"]["affected_orders"].eq(0).all()
+    assert details["flow"]["remaining_item_rows"].eq(0).all()
+    assert details["excluded_orders"].empty
+
+
+@pytest.mark.parametrize("problem", ["missing_flag", "nullable_flag", "duplicate_key"])
+def test_order_filter_rejects_invalid_inspection_contract(cleaning_full_frame, problem):
+    inspected, _ = clean_order_items(cleaning_full_frame)
+    if problem == "missing_flag":
+        inspected = inspected.drop(columns="needs_deadline_review")
+    elif problem == "nullable_flag":
+        inspected["needs_deadline_review"] = inspected["needs_deadline_review"].astype("boolean")
+        inspected.iloc[0, inspected.columns.get_loc("needs_deadline_review")] = pd.NA
+    else:
+        inspected.iloc[1, inspected.columns.get_loc("order_item_id")] = 1
+    with pytest.raises(ValueError):
+        filter_eligible_orders(inspected)
 
