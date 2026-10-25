@@ -2,7 +2,10 @@
 
 import ast
 import json
+import io
+from contextlib import redirect_stdout
 from dataclasses import replace
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
@@ -459,4 +462,160 @@ def test_roundtrip_comparison_detects_changed_values(cleaning_full_frame):
     restored.iloc[0, restored.columns.get_loc("price")] += 1
     with pytest.raises(AssertionError):
         assert_cleaned_roundtrip(cleaned, restored)
+
+
+@pytest.mark.parametrize("start_directory", ["", "notebooks"])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_notebook_executes_complete_cleaning_and_verifies_the_saved_format(
+    cleaning_full_frame, tmp_path, monkeypatch, start_directory, fallback,
+):
+    source = cleaning_full_frame.copy(deep=True)
+    before = source.copy(deep=True)
+    original_loader = load_data
+    monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
+    monkeypatch.setattr("src.cleaning.workflow.PROCESSED_DIR", tmp_path)
+    if fallback:
+        stale, _ = clean_order_items(source)
+        stale["price"] += 100.0
+        save_cleaned_data(stale, tmp_path)
+
+        def unavailable_writer(*args, **kwargs):
+            raise ImportError("Simulated unavailable Parquet engine")
+        monkeypatch.setattr("src.pipeline.io.dataset_io.write_parquet_dataset", unavailable_writer)
+
+    def staged_loader(name, stage="raw", **kwargs):
+        if stage == "interim":
+            assert name == "merged_order_items"
+            return source
+        return original_loader(name, stage=stage, **kwargs)
+
+    monkeypatch.setattr("src.data_loader.load_data", staged_loader)
+    workflow_spy = Mock(wraps=clean_order_items)
+    monkeypatch.setattr("src.cleaning.clean_order_items", workflow_spy)
+    notebook = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
+    namespace, displayed = {}, []
+    with (
+        patch("pathlib.Path.cwd", return_value=PROJECT_ROOT / start_directory),
+        patch("IPython.display.display", side_effect=displayed.append),
+        redirect_stdout(io.StringIO()),
+    ):
+        for position, cell in enumerate(notebook["cells"]):
+            if cell["cell_type"] == "code":
+                code = cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
+                exec(compile(code, f"cleaning_cell_{position}", "exec"), namespace)
+
+    assert workflow_spy.call_count == 1
+    assert namespace["cleaned_df"].shape == (3, 28)
+    assert namespace["saved_path"].suffix == (".csv" if fallback else ".parquet")
+    assert namespace["cleaning_details"]["output_checks"]["passed"].all()
+    assert_cleaned_roundtrip(namespace["cleaned_df"], namespace["reloaded_df"])
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert displayed
+    if fallback:
+        # The default remains Parquet-first; the notebook must verify the new CSV.
+        stale_read = original_loader(CLEANED_DATASET_NAME, stage="processed")
+        assert stale_read.iloc[0]["price"] == before.iloc[0]["price"] + 100.0
+        assert namespace["reloaded_df"].iloc[0]["price"] == before.iloc[0]["price"]
+
+
+def test_notebook_has_no_report_or_document_export_calls():
+    notebook = json.loads(NOTEBOOK_PATH.read_text(encoding="utf-8"))
+    forbidden = {
+        "to_markdown", "write_text", "write_bytes", "to_json", "to_csv",
+        "to_parquet", "to_excel", "savefig", "open",
+    }
+    for cell in notebook["cells"]:
+        if cell["cell_type"] != "code":
+            continue
+        source = cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Call):
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                assert name not in forbidden, f"Unexpected direct export call: {name}"
+
+
+@pytest.mark.parametrize("change", ["rows", "row_order", "column_order", "dtype"])
+def test_source_baseline_detects_structural_changes(cleaning_full_frame, change):
+    baseline = capture_input_baseline(cleaning_full_frame)
+    changed = cleaning_full_frame.copy(deep=True)
+    if change == "rows":
+        changed = changed.iloc[:-1]
+    elif change == "row_order":
+        changed = changed.iloc[::-1]
+    elif change == "column_order":
+        changed = changed[changed.columns[::-1]]
+    else:
+        changed["price"] = changed["price"].astype("float32")
+    with pytest.raises(AssertionError):
+        assert_input_unchanged(changed, baseline)
+
+
+def test_full_workflow_rejects_unapproved_transform_changes(cleaning_full_frame, monkeypatch):
+    import src.cleaning.workflow as workflow
+
+    source = cleaning_full_frame.copy(deep=True)
+    before = source.copy(deep=True)
+    normalize = workflow.normalize_city_whitespace
+
+    def faulty_transform(frame):
+        cleaned, summary = normalize(frame)
+        cleaned["price"] += 1.0
+        return cleaned, summary
+
+    monkeypatch.setattr(workflow, "normalize_city_whitespace", faulty_transform)
+    with pytest.raises(AssertionError):
+        clean_order_items(source)
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+def test_clean_csv_restores_true_flags_nulls_and_literals_after_corrupt_parquet(
+    cleaning_full_frame, tmp_path, monkeypatch,
+):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[[0, 2], source.columns.get_loc("product_weight_g")] = 0.0
+    source.iloc[0:2, source.columns.get_loc("order_approved_at")] = pd.Timestamp("2017-01-01 09:00")
+    source.iloc[2, source.columns.get_loc("order_delivered_customer_date")] = pd.NaT
+    source.iloc[1, source.columns.get_loc("shipping_limit_date")] = pd.Timestamp("2020-01-01")
+    source["product_category_name"] = pd.Series(["NA", "NULL", "NA"], index=source.index, dtype="string")
+    cleaned, _ = clean_order_items(source)
+
+    def unavailable_writer(*args, **kwargs):
+        raise ImportError("Simulated unavailable Parquet engine")
+    monkeypatch.setattr("src.pipeline.io.dataset_io.write_parquet_dataset", unavailable_writer)
+    save_cleaned_data(cleaned, tmp_path)
+    (tmp_path / (CLEANED_DATASET_NAME + ".parquet")).write_bytes(b"corrupt parquet")
+    monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
+    restored = load_data(CLEANED_DATASET_NAME, stage="processed")
+
+    assert_cleaned_roundtrip(cleaned, restored)
+    assert restored["has_invalid_physical_measurement"].tolist() == [True, False, True]
+    assert restored["has_invalid_timeline"].tolist() == [True, True, False]
+    assert restored["needs_deadline_review"].tolist() == [False, True, False]
+    assert restored["product_category_name"].tolist() == ["NA", "NULL", "NA"]
+    assert pd.isna(restored.iloc[2]["order_delivered_customer_date"])
+    assert pd.isna(restored.iloc[0]["product_weight_g"])
+
+
+def test_clean_save_reports_both_failures_and_preserves_previous_file(
+    cleaning_full_frame, tmp_path, monkeypatch,
+):
+    cleaned, _ = clean_order_items(cleaning_full_frame)
+    saved = save_cleaned_data(cleaned, tmp_path)
+    previous = saved.read_bytes()
+
+    def failed_parquet(*args, **kwargs):
+        raise ImportError("Simulated missing engine")
+
+    def failed_csv(*args, **kwargs):
+        raise OSError("Simulated CSV write failure")
+
+    monkeypatch.setattr("src.pipeline.io.dataset_io.write_parquet_dataset", failed_parquet)
+    monkeypatch.setattr("src.pipeline.io.dataset_io.write_csv_dataset", failed_csv)
+    with pytest.raises(RuntimeError, match="either format") as error:
+        save_cleaned_data(cleaned, tmp_path)
+    assert ".parquet" in str(error.value) and ".csv" in str(error.value)
+    assert isinstance(error.value.__cause__, ExceptionGroup)
+    assert len(error.value.__cause__.exceptions) == 2
+    assert saved.read_bytes() == previous
+    assert not list(tmp_path.glob(".merge-*.tmp"))
 
