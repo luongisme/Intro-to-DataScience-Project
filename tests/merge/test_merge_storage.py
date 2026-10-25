@@ -362,7 +362,7 @@ def test_save_interruption_does_not_try_csv(tmp_path, monkeypatch):
 
 
 def test_csv_workflow_without_parquet_engine_in_fresh_process(tmp_path):
-    root = Path(__file__).resolve().parents[1]
+    root = Path(__file__).resolve().parents[2]
     script = '''
 import builtins
 import sys
