@@ -35,7 +35,7 @@ The intermediate inspection table preserves all input rows and adds three qualit
 
 ## 2. Order filtering
 
-![Figure 1 — Order retention and sequential exclusions](../../reports/figures/clean/figure_01_filtering.png)
+![Figure 1 — Order retention and sequential exclusions](../figures/clean/figure_01_filtering.png)
 
 *Figure 1. Of 98,666 input orders, 95,075 are retained (96.36%). The lower panel counts newly excluded orders at each rule. Each excluded order contributes once to the total.*
 
@@ -82,7 +82,7 @@ Price and freight values remain unchanged for every retained item. The final dat
 
 ## 4. Remaining missing values
 
-![Figure 2 — Missing values before and after cleaning](../../reports/figures/clean/figure_02_missingness.png)
+![Figure 2 — Missing values before and after cleaning](../figures/clean/figure_02_missingness.png)
 
 *Figure 2. Percentages use separate denominators: 112,650 input items and 108,571 retained items. Labels show both the missing count and percentage. The four physical measurements share the same missing counts and are grouped into one row; 18 is the count for each column, not their combined total.*
 
@@ -99,7 +99,7 @@ Each physical measurement is missing for **0.0166% of retained items**. Its miss
 
 ## 5. Numeric distributions
 
-![Figure 3 — Numeric distributions in the retained dataset](../../reports/figures/clean/figure_03_numeric.png)
+![Figure 3 — Numeric distributions in the retained dataset](../figures/clean/figure_03_numeric.png)
 
 *Figure 3. Price and freight use 108,571 items. Weight uses 31,875 products, of which 31,873 have finite values and 2 have missing values. The upper panels show the full range; the lower panels show the 1st–99th percentile window. Observations outside these windows remain in the dataset and the full-range panels.*
 
@@ -116,7 +116,7 @@ Product statistics use one record per product, avoiding repeated counts based on
 
 ## 6. Temporal coverage and approval hours
 
-![Figure 4 — Purchase months and approval hours after cleaning](../../reports/figures/clean/figure_04_calendar.png)
+![Figure 4 — Purchase months and approval hours after cleaning](../figures/clean/figure_04_calendar.png)
 
 *Figure 4. Both panels use 95,075 distinct orders. The month axis includes months with zero orders. Approval hours are extracted from the stored `order_approved_at` timestamps, without timezone conversion or work-shift grouping.*
 
@@ -128,7 +128,7 @@ The panels describe order counts by recorded purchase month and approval hour.
 
 ### 7.1. Product categories
 
-![Figure 5 — Category frequencies at product level](../../reports/figures/clean/figure_05_categories.png)
+![Figure 5 — Category frequencies at product level](../figures/clean/figure_05_categories.png)
 
 *Figure 5. The denominator is all 31,875 retained products. The ten most frequent non-missing categories are shown individually; remaining categories are grouped as Other, and missing categories are shown separately. Other combines multiple source categories.*
 
@@ -136,7 +136,7 @@ The panels describe order counts by recorded purchase month and approval hour.
 
 ### 7.2. Customer and seller states
 
-![Figure 6 — State frequencies at customer-record and seller levels](../../reports/figures/clean/figure_06_geography.png)
+![Figure 6 — State frequencies at customer-record and seller levels](../figures/clean/figure_06_geography.png)
 
 *Figure 6. The left panel uses 95,075 customer records identified by `customer_id`; the right panel uses 2,959 sellers. Customer records do not represent unique people. Each panel shows the ten most frequent states and groups the remaining states as Other.*
 
