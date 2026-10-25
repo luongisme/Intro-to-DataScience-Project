@@ -36,6 +36,13 @@ COLUMN_LABELS = {
     "needs_deadline_review": "Shipping Deadline Needs Review",
     "deadline_before_purchase": "Deadline Before Purchase",
     "deadline_after_purchase_year": "Deadline Beyond Latest Purchase Year",
+    "attribute": "Attribute",
+    "grain": "Grain",
+    "unit": "Unit",
+    "missing_before": "Missing Items Before",
+    "missing_after": "Missing Items After",
+    "missing_pct_before": "Missing Before (%)",
+    "missing_pct_after": "Missing After (%)",
     "metric": "Metric",
     "reference": "Reference",
     "observed": "Observed",
@@ -123,7 +130,7 @@ DATETIME_COLUMNS = {
     "order_estimated_delivery_date", "shipping_limit_date",
 }
 PERCENT_COLUMNS = {
-    "missing_pct", "blank_pct", "pct_all", "affected_pct_evaluated",
+    "missing_pct", "missing_pct_before", "missing_pct_after", "blank_pct", "pct_all", "affected_pct_evaluated",
     "affected_pct_all", "flagged_pct_evaluated", "outside_iqr_pct", "conflict_pct",
 }
 
