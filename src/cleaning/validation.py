@@ -2,6 +2,7 @@
 
 import pandas as pd
 
+from src.cleaning.text import inspect_text_fields
 from src.eda.checks import profile_entity_consistency, profile_keys
 from src.pipeline.contracts.schema import FULL_MERGE_SCHEMA
 from src.pipeline.contracts.validator import validate_table_contract
@@ -24,15 +25,28 @@ def capture_input_baseline(df: pd.DataFrame) -> dict:
 def validate_cleaning_input(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Validate the full merge contract and repeated source entity attributes.
 
-    Reject empty inputs, schema/key/non-null violations, invalid entity keys,
-    or conflicting attributes before cleaning. Return key and consistency
-    profiles for display. Never modify input values or types.
+    Reject empty inputs, schema/key/non-null violations, invalid observed text
+    formats/domains, invalid entity keys or conflicting attributes. Return key,
+    text and consistency profiles for display. Optional missing text attributes
+    are counted separately and preserved. Never modify input values or types.
     """
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas DataFrame.")
     if df.empty:
         raise ValueError("The full merged input must contain at least one item row.")
     validate_table_contract(df, FULL_MERGE_SCHEMA, table_name="merged_order_items")
+    text_profile = inspect_text_fields(df)
+    invalid_text = text_profile["summary"].loc[
+        text_profile["summary"]["invalid_item_rows"].gt(0),
+        ["column", "invalid_item_rows"],
+    ]
+    if not invalid_text.empty:
+        counts = dict(invalid_text.itertuples(index=False, name=None))
+        raise ValueError(
+            f"Cleaning input has invalid text values (item counts): {counts}. "
+            "Use src.cleaning.inspect_text_fields(df)['issues'] to inspect "
+            "original values and item positions. Resolve these values before cleaning."
+        )
     keys = profile_keys(df)
     consistency = profile_entity_consistency(df)
     summary = consistency["summary"]
@@ -49,6 +63,7 @@ def validate_cleaning_input(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
         "entity_consistency": summary,
         "attribute_consistency": consistency["attributes"],
         "conflicts": consistency["conflicts"],
+        "text_formats": text_profile["summary"],
     }
 
 
