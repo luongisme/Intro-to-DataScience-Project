@@ -475,16 +475,20 @@ def test_roundtrip_comparison_detects_changed_values(cleaning_full_frame):
 
 @pytest.mark.parametrize("start_directory", ["", "notebooks"])
 @pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("with_exclusions", [False, True])
 def test_notebook_executes_complete_cleaning_and_verifies_the_saved_format(
-    cleaning_full_frame, tmp_path, monkeypatch, start_directory, fallback,
+    cleaning_full_frame, tmp_path, monkeypatch, start_directory, fallback, with_exclusions,
 ):
     source = cleaning_full_frame.copy(deep=True)
+    if with_exclusions:
+        source.iloc[1, source.columns.get_loc("product_weight_g")] = 0.0
     before = source.copy(deep=True)
+    expected, _ = clean_order_items(source)
     original_loader = load_data
     monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
     monkeypatch.setattr("src.cleaning.workflow.PROCESSED_DIR", tmp_path)
     if fallback:
-        stale, _ = clean_order_items(source)
+        stale = expected.copy(deep=True)
         stale["price"] += 100.0
         save_cleaned_data(stale, tmp_path)
 
@@ -514,7 +518,10 @@ def test_notebook_executes_complete_cleaning_and_verifies_the_saved_format(
                 exec(compile(code, f"cleaning_cell_{position}", "exec"), namespace)
 
     assert workflow_spy.call_count == 1
-    assert namespace["cleaned_df"].shape == (3, 25)
+    assert namespace["cleaned_df"].shape == ((1, 25) if with_exclusions else (3, 25))
+    pd.testing.assert_frame_equal(namespace["cleaned_df"], expected, check_exact=True)
+    assert len(namespace["cleaning_details"]["excluded_orders"]) == int(with_exclusions)
+    assert namespace["cleaning_details"]["filter_flow"]["removed_item_rows"].sum() == (2 if with_exclusions else 0)
     assert namespace["saved_path"].suffix == (".csv" if fallback else ".parquet")
     assert namespace["cleaning_details"]["output_checks"]["passed"].all()
     assert_cleaned_roundtrip(namespace["cleaned_df"], namespace["reloaded_df"])
@@ -523,8 +530,8 @@ def test_notebook_executes_complete_cleaning_and_verifies_the_saved_format(
     if fallback:
         # The default remains Parquet-first; the notebook must verify the new CSV.
         stale_read = original_loader(CLEANED_DATASET_NAME, stage="processed")
-        assert stale_read.iloc[0]["price"] == before.iloc[0]["price"] + 100.0
-        assert namespace["reloaded_df"].iloc[0]["price"] == before.iloc[0]["price"]
+        assert stale_read.iloc[0]["price"] == expected.iloc[0]["price"] + 100.0
+        assert namespace["reloaded_df"].iloc[0]["price"] == expected.iloc[0]["price"]
 
 
 def test_notebook_has_no_report_or_document_export_calls():
