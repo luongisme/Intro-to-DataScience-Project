@@ -2,11 +2,18 @@
 
 import ast
 import json
+from dataclasses import replace
 
 import pandas as pd
 import pytest
 
 from src.cleaning import (
+    CLEANED_DATASET_NAME,
+    CLEANED_ORDER_ITEMS_SCHEMA,
+    assert_cleaned_roundtrip,
+    clean_order_items,
+    save_cleaned_data,
+    validate_cleaning_output,
     clean_physical_measurements,
     flag_timeline_issues,
     flag_deadline_issues,
@@ -20,6 +27,8 @@ from src.cleaning.validation import (
     validate_cleaning_input,
 )
 from src.paths import PROJECT_ROOT
+from src.data_loader import load_data
+from src.pipeline.contracts.schema import FULL_MERGE_SCHEMA
 
 
 NOTEBOOK_PATH = PROJECT_ROOT / "notebooks/02_data_cleaning.ipynb"
@@ -339,4 +348,115 @@ def test_core_timeline_missing_endpoint_is_unknown_without_a_false_reversal(clea
     assert check["affected_orders"] == 0
     assert core_summary.loc[0, "orders_missing_any_core_timestamp"] == 1
     pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+def test_full_cleaning_workflow_preserves_items_statuses_and_source(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[0:2, source.columns.get_loc("customer_city")] = "  city   a "
+    source.iloc[[0, 2], source.columns.get_loc("product_weight_g")] = 0.0
+    source.iloc[2, source.columns.get_loc("order_status")] = "canceled"
+    before = source.copy(deep=True)
+
+    cleaned, details = clean_order_items(source)
+    again, repeated_details = clean_order_items(source)
+
+    assert cleaned.shape == (3, 28)
+    assert list(cleaned.columns) == CLEANED_ORDER_ITEMS_SCHEMA.columns
+    assert cleaned["has_invalid_physical_measurement"].tolist() == [True, False, True]
+    assert cleaned["order_status"].tolist() == ["delivered", "delivered", "canceled"]
+    assert cleaned.iloc[1]["freight_value"] == 0.0
+    assert details["text_changes"]["changed_item_rows"].sum() == 2
+    assert details["output_checks"]["passed"].all()
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    pd.testing.assert_frame_equal(cleaned, again, check_exact=True)
+    for name in details:
+        pd.testing.assert_frame_equal(details[name], repeated_details[name], check_exact=True)
+    assert len(FULL_MERGE_SCHEMA.columns) == 25
+    assert all(column not in FULL_MERGE_SCHEMA.dtypes for column in (
+        "has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review",
+    ))
+
+
+@pytest.mark.parametrize("column,value", [
+    ("price", 999.0),
+    ("order_status", "canceled"),
+    ("order_delivered_customer_date", pd.Timestamp("2019-01-01")),
+    ("customer_city", "a different city"),
+    ("product_height_cm", pd.NA),
+    ("has_invalid_physical_measurement", True),
+    ("has_invalid_timeline", True),
+    ("needs_deadline_review", True),
+])
+def test_output_validation_rejects_unapproved_cell_or_flag_changes(
+    cleaning_full_frame, column, value,
+):
+    cleaned, _ = clean_order_items(cleaning_full_frame)
+    cleaned.iloc[0, cleaned.columns.get_loc(column)] = value
+    with pytest.raises(AssertionError):
+        validate_cleaning_output(cleaning_full_frame, cleaned)
+
+
+def test_output_validation_rejects_row_reordering(cleaning_full_frame):
+    cleaned, _ = clean_order_items(cleaning_full_frame)
+    with pytest.raises(AssertionError):
+        validate_cleaning_output(cleaning_full_frame, cleaned.iloc[::-1])
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_processed_roundtrip_preserves_types_and_supports_csv_fallback(
+    cleaning_full_frame, tmp_path, monkeypatch, fallback,
+):
+    cleaned, _ = clean_order_items(cleaning_full_frame)
+    monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
+    if fallback:
+        def unavailable_writer(*args, **kwargs):
+            raise ImportError("Simulated unavailable Parquet engine")
+        monkeypatch.setattr("src.pipeline.io.dataset_io.write_parquet_dataset", unavailable_writer)
+    saved = save_cleaned_data(cleaned, tmp_path)
+    assert saved.name == CLEANED_DATASET_NAME + (".csv" if fallback else ".parquet")
+    restored = load_data(CLEANED_DATASET_NAME, stage="processed")
+    assert_cleaned_roundtrip(cleaned, restored)
+    assert restored.iloc[0]["customer_zip_code_prefix"] == "00123"
+    assert str(restored["shipping_limit_date"].dtype) == "datetime64[us]"
+    for column in ("has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review"):
+        assert restored[column].dtype == bool
+    if fallback:
+        def forbidden_parquet_read(*args, **kwargs):
+            pytest.fail("Explicit CSV selection must not inspect Parquet")
+        monkeypatch.setattr("src.pipeline.io.dataset_io.read_parquet_dataset", forbidden_parquet_read)
+        assert_cleaned_roundtrip(cleaned, load_data(
+            CLEANED_DATASET_NAME, stage="processed", file_format="csv",
+        ))
+    assert not list(tmp_path.glob(".merge-*.tmp"))
+
+
+def test_processed_loader_protects_registered_contract_and_rejects_parser_overrides():
+    with pytest.raises(ValueError, match="fixed registered schema"):
+        load_data(CLEANED_DATASET_NAME, stage="processed", schema=replace(
+            CLEANED_ORDER_ITEMS_SCHEMA, unique_key=[],
+        ))
+    with pytest.raises(TypeError, match="Unsupported processed"):
+        load_data(CLEANED_DATASET_NAME, stage="processed", dtype="string")
+
+
+def test_processed_loader_reports_both_missing_formats(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
+    with pytest.raises(RuntimeError, match="either format") as error:
+        load_data(CLEANED_DATASET_NAME, stage="processed")
+    assert ".parquet" in str(error.value) and ".csv" in str(error.value)
+
+
+def test_clean_saver_validates_before_creating_output(cleaning_full_frame, tmp_path):
+    directory = tmp_path / "not_created"
+    with pytest.raises(ValueError, match="column mismatch"):
+        save_cleaned_data(cleaning_full_frame, directory)
+    assert not directory.exists()
+
+
+def test_roundtrip_comparison_detects_changed_values(cleaning_full_frame):
+    cleaned, _ = clean_order_items(cleaning_full_frame)
+    restored = cleaned.reset_index(drop=True)
+    restored.iloc[0, restored.columns.get_loc("price")] += 1
+    with pytest.raises(AssertionError):
+        assert_cleaned_roundtrip(cleaned, restored)
 

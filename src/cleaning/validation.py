@@ -1,8 +1,13 @@
-"""Read-only input checks and preservation baseline for data cleaning."""
+"""Input, allowed-change and storage roundtrip checks for data cleaning."""
 
 import pandas as pd
 
-from src.cleaning.text import inspect_text_fields
+from src.cleaning.measurements import INVALID_PHYSICAL_FLAG, PHYSICAL_COLUMNS
+from src.cleaning.schema import CLEANED_ORDER_ITEMS_SCHEMA
+from src.cleaning.text import CITY_COLUMNS, inspect_text_fields
+from src.cleaning.timeline import (
+    CORE_TIMESTAMP_COLUMNS, DEADLINE_REVIEW_FLAG, INVALID_TIMELINE_FLAG,
+)
 from src.eda.checks import profile_entity_consistency, profile_keys
 from src.pipeline.contracts.schema import FULL_MERGE_SCHEMA
 from src.pipeline.contracts.validator import validate_table_contract
@@ -80,3 +85,83 @@ def assert_input_unchanged(df: pd.DataFrame, baseline: dict) -> None:
     pd.testing.assert_series_equal(
         pd.util.hash_pandas_object(df, index=True), baseline["row_hashes"],
     )
+
+
+def validate_cleaning_output(
+    source: pd.DataFrame,
+    cleaned: pd.DataFrame,
+) -> pd.DataFrame:
+    """Verify the exact clean contract and every permitted change against source.
+
+    Preserve item keys, index, row order and all original dtypes. Permit only
+    city whitespace normalization and non-positive physical cells becoming
+    missing. Verify all three quality flags against original observations.
+    Raise on any mismatch; return a displayable table of successful checks.
+    The caller must separately compare source to its pre-cleaning baseline.
+    """
+    validate_table_contract(source, FULL_MERGE_SCHEMA, table_name="cleaning_source")
+    validate_table_contract(cleaned, CLEANED_ORDER_ITEMS_SCHEMA, table_name="cleaned_order_items")
+    pd.testing.assert_index_equal(source.index, cleaned.index, obj="Clean row index")
+    pd.testing.assert_frame_equal(
+        source[FULL_MERGE_SCHEMA.unique_key], cleaned[FULL_MERGE_SCHEMA.unique_key],
+        check_exact=True, obj="Preserved item keys and row order",
+    )
+    mutable = {*CITY_COLUMNS, *PHYSICAL_COLUMNS}
+    preserved = [column for column in source.columns if column not in mutable]
+    pd.testing.assert_frame_equal(
+        source[preserved], cleaned[preserved], check_exact=True,
+        obj="Source fields outside the cleaning rules",
+    )
+    for column in CITY_COLUMNS:
+        expected = source[column].str.strip().str.replace(r"\s+", " ", regex=True)
+        pd.testing.assert_series_equal(
+            expected, cleaned[column], check_exact=True, obj=f"City whitespace: {column}",
+        )
+    invalid_measurements = source[list(PHYSICAL_COLUMNS)].le(0).fillna(False)
+    for column in PHYSICAL_COLUMNS:
+        expected = source[column].mask(invalid_measurements[column], pd.NA)
+        pd.testing.assert_series_equal(
+            expected, cleaned[column], check_exact=True, obj=f"Physical cells: {column}",
+        )
+    expected_timeline = pd.Series(False, index=source.index, dtype=bool)
+    for start, end in zip(CORE_TIMESTAMP_COLUMNS, CORE_TIMESTAMP_COLUMNS[1:]):
+        expected_timeline |= source[end].lt(source[start]).fillna(False)
+    deadline = source["shipping_limit_date"]
+    purchase = source["order_purchase_timestamp"]
+    expected_deadline = deadline.lt(purchase).fillna(False)
+    latest_purchase = purchase.max()
+    if pd.notna(latest_purchase):
+        expected_deadline |= deadline.dt.year.gt(latest_purchase.year).fillna(False)
+    expected_flags = {
+        INVALID_PHYSICAL_FLAG: invalid_measurements.any(axis=1),
+        INVALID_TIMELINE_FLAG: expected_timeline,
+        DEADLINE_REVIEW_FLAG: expected_deadline,
+    }
+    for column, values in expected_flags.items():
+        expected = pd.Series(values.to_numpy(dtype=bool), index=source.index, name=column)
+        pd.testing.assert_series_equal(
+            expected, cleaned[column], check_exact=True, obj=f"Quality flag: {column}",
+        )
+    return pd.DataFrame({
+        "check": [
+            "Clean schema and dtypes", "Item keys and row order",
+            "Preserved source fields", "City whitespace normalization",
+            "Physical measurement handling", "Quality flag consistency",
+        ],
+        "passed": True,
+    })
+
+
+def assert_cleaned_roundtrip(expected: pd.DataFrame, restored: pd.DataFrame) -> None:
+    """Require exact clean values, columns, dtypes and row order after storage.
+
+    The shared Parquet/CSV contract stores item keys and row order, not pandas
+    index labels. Ignore only those in-memory labels when comparing results.
+    """
+    for label, frame in (("expected_clean", expected), ("restored_clean", restored)):
+        validate_table_contract(frame, CLEANED_ORDER_ITEMS_SCHEMA, table_name=label)
+    pd.testing.assert_frame_equal(
+        expected.reset_index(drop=True), restored.reset_index(drop=True),
+        check_exact=True, obj="Clean storage roundtrip",
+    )
+
