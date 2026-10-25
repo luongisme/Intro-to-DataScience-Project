@@ -9,6 +9,7 @@ import pytest
 from src.cleaning import (
     clean_physical_measurements,
     flag_timeline_issues,
+    flag_deadline_issues,
     format_cleaning_preview,
     inspect_text_fields,
     normalize_city_whitespace,
@@ -223,4 +224,119 @@ def test_text_inspection_empty_input_has_stable_output_columns(cleaning_full_fra
     assert len(profile["summary"]) == 9
     assert profile["summary"]["item_rows"].eq(0).all()
     assert profile["issues"].empty
+
+
+def test_deadline_review_flags_only_affected_items_and_preserves_source(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    position = source.columns.get_loc("shipping_limit_date")
+    source.iloc[0, position] = pd.Timestamp("2020-01-01")
+    source.iloc[2, position] = pd.Timestamp("2017-01-31")
+    source["has_invalid_physical_measurement"] = [False, True, False]
+    source["has_invalid_timeline"] = [False, False, True]
+    before = source.copy(deep=True)
+
+    cleaned, summary, records = flag_deadline_issues(source)
+
+    assert cleaned["needs_deadline_review"].tolist() == [True, False, True]
+    assert cleaned["needs_deadline_review"].dtype == bool
+    pd.testing.assert_frame_equal(cleaned[source.columns], before, check_exact=True)
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+    assert records["order_item_id"].tolist() == [1, 1]
+    assert records["deadline_before_purchase"].tolist() == [False, True]
+    assert records["deadline_after_purchase_year"].tolist() == [True, False]
+    table = summary.set_index("check")
+    assert table["affected_item_rows"].tolist() == [1, 1]
+    assert table["affected_orders"].tolist() == [1, 1]
+    assert table["affected_order_seller_groups"].tolist() == [1, 1]
+    preview = format_cleaning_preview(cleaned)
+    assert preview["Shipping Deadline Needs Review"].tolist() == ["Yes", "No", "Yes"]
+
+
+def test_deadline_review_keeps_missing_comparisons_unknown(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[0, source.columns.get_loc("shipping_limit_date")] = pd.NaT
+    source.iloc[2, source.columns.get_loc("order_purchase_timestamp")] = pd.NaT
+    source.iloc[2, source.columns.get_loc("shipping_limit_date")] = pd.Timestamp("2020-01-01")
+
+    cleaned, summary, records = flag_deadline_issues(source)
+
+    assert cleaned["needs_deadline_review"].tolist() == [False, False, True]
+    table = summary.set_index("check")
+    assert table.loc["deadline_before_purchase", "comparable_item_rows"] == 1
+    assert table.loc["deadline_before_purchase", "unknown_item_rows"] == 2
+    assert table.loc["deadline_after_purchase_year", "unknown_item_rows"] == 1
+    assert pd.isna(records.iloc[0]["deadline_before_purchase"])
+    assert bool(records.iloc[0]["deadline_after_purchase_year"])
+    assert str(records["deadline_before_purchase"].dtype) == "boolean"
+
+
+def test_deadline_review_without_purchase_reference_does_not_invent_a_cutoff(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source["order_purchase_timestamp"] = pd.Series(
+        pd.NaT, index=source.index, dtype=source["order_purchase_timestamp"].dtype,
+    )
+    cleaned, summary, records = flag_deadline_issues(source)
+
+    assert not cleaned["needs_deadline_review"].any()
+    assert summary["unknown_item_rows"].tolist() == [3, 3]
+    assert summary["comparable_item_rows"].tolist() == [0, 0]
+    assert records.empty
+    assert "Unavailable" in summary.iloc[1]["reference"]
+
+
+def test_deadline_year_reference_uses_the_full_input_not_each_order_year(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[2, source.columns.get_loc("order_purchase_timestamp")] = pd.Timestamp("2018-01-01")
+    source.iloc[0, source.columns.get_loc("shipping_limit_date")] = pd.Timestamp("2018-01-02")
+    source.iloc[2, source.columns.get_loc("shipping_limit_date")] = pd.Timestamp("2018-01-03")
+
+    cleaned, summary, records = flag_deadline_issues(source)
+
+    assert not cleaned["needs_deadline_review"].any()
+    assert records.empty
+    assert summary.iloc[1]["reference"] == "Latest observed purchase year: 2018"
+
+
+def test_deadline_equal_to_purchase_is_not_an_ordering_issue(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source["shipping_limit_date"] = source["order_purchase_timestamp"].copy()
+    cleaned, summary, _ = flag_deadline_issues(source)
+    assert not cleaned["needs_deadline_review"].any()
+    assert summary["affected_item_rows"].eq(0).all()
+
+
+@pytest.mark.parametrize("column", ["shipping_limit_date", "order_purchase_timestamp"])
+def test_deadline_review_rejects_string_timestamps(cleaning_full_frame, column):
+    source = cleaning_full_frame.copy(deep=True)
+    source[column] = source[column].astype("string")
+    with pytest.raises(TypeError, match="datetime dtype"):
+        flag_deadline_issues(source)
+
+
+def test_deadline_review_refuses_to_overwrite_an_existing_flag(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source["needs_deadline_review"] = False
+    with pytest.raises(ValueError, match="reserved column"):
+        flag_deadline_issues(source)
+
+
+def test_deadline_review_rejects_duplicate_item_keys(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[1, source.columns.get_loc("order_item_id")] = 1
+    with pytest.raises(ValueError, match="not unique"):
+        flag_deadline_issues(source)
+
+
+def test_core_timeline_missing_endpoint_is_unknown_without_a_false_reversal(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[2, source.columns.get_loc("order_delivered_customer_date")] = pd.NaT
+    before = source.copy(deep=True)
+    cleaned, summary, core_summary = flag_timeline_issues(source)
+
+    assert not cleaned["has_invalid_timeline"].any()
+    check = summary.set_index("check").loc["customer_before_carrier"]
+    assert check["unknown_orders"] == 1
+    assert check["affected_orders"] == 0
+    assert core_summary.loc[0, "orders_missing_any_core_timestamp"] == 1
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
 

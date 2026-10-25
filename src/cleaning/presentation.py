@@ -33,6 +33,9 @@ COLUMN_LABELS = {
     "product_width_cm": "Product Width (cm)",
     "has_invalid_physical_measurement": "Invalid Physical Measurement",
     "has_invalid_timeline": "Invalid Core Timestamp Order",
+    "needs_deadline_review": "Shipping Deadline Needs Review",
+    "deadline_before_purchase": "Deadline Before Purchase",
+    "deadline_after_purchase_year": "Deadline Beyond Latest Purchase Year",
     "metric": "Metric",
     "reference": "Reference",
     "observed": "Observed",
@@ -89,7 +92,7 @@ DISPLAY_ORDER = (
     "product_height_cm", "product_width_cm", "price", "freight_value",
     "customer_zip_code_prefix", "customer_city", "customer_state",
     "seller_zip_code_prefix", "seller_city", "seller_state",
-    "has_invalid_physical_measurement", "has_invalid_timeline",
+    "has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review",
 )
 CURRENCY_COLUMNS = {"price", "freight_value"}
 DATETIME_COLUMNS = {
