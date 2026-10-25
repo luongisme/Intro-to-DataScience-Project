@@ -46,7 +46,8 @@ def load_data(
     explicit override must equal. Custom names require schema=TableSchema(...).
     Other saved-dataset parser kwargs are rejected to preserve validated types.
 
-    The processed name 'cleaned_order_items' uses the 28-column clean contract.
+    The processed name 'cleaned_order_items' uses the fixed 25-column contract
+    for retained items.
     Both saved stages delegate to the shared reader for dtype restoration,
     column/key checks, format announcements and error guidance. No cleaning or
     saving occurs here. Failed direct CSV reads propagate their original error;

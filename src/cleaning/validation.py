@@ -3,7 +3,9 @@
 import pandas as pd
 
 from src.cleaning.measurements import INVALID_PHYSICAL_FLAG, PHYSICAL_COLUMNS
-from src.cleaning.schema import CLEANED_ORDER_ITEMS_SCHEMA
+from src.cleaning.schema import (
+    CLEANED_ORDER_ITEMS_SCHEMA, FLAGGED_ORDER_ITEMS_SCHEMA, REQUIRED_TIMESTAMPS,
+)
 from src.cleaning.text import CITY_COLUMNS, inspect_text_fields
 from src.cleaning.timeline import (
     CORE_TIMESTAMP_COLUMNS, DEADLINE_REVIEW_FLAG, INVALID_TIMELINE_FLAG,
@@ -87,11 +89,11 @@ def assert_input_unchanged(df: pd.DataFrame, baseline: dict) -> None:
     )
 
 
-def validate_cleaning_output(
+def validate_inspected_output(
     source: pd.DataFrame,
-    cleaned: pd.DataFrame,
+    inspected: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Verify the exact clean contract and every permitted change against source.
+    """Verify all preparation changes and quality flags before order filtering.
 
     Preserve item keys, index, row order and all original dtypes. Permit only
     city whitespace normalization and non-positive physical cells becoming
@@ -100,28 +102,28 @@ def validate_cleaning_output(
     The caller must separately compare source to its pre-cleaning baseline.
     """
     validate_table_contract(source, FULL_MERGE_SCHEMA, table_name="cleaning_source")
-    validate_table_contract(cleaned, CLEANED_ORDER_ITEMS_SCHEMA, table_name="cleaned_order_items")
-    pd.testing.assert_index_equal(source.index, cleaned.index, obj="Clean row index")
+    validate_table_contract(inspected, FLAGGED_ORDER_ITEMS_SCHEMA, table_name="inspected_order_items")
+    pd.testing.assert_index_equal(source.index, inspected.index, obj="Inspection row index")
     pd.testing.assert_frame_equal(
-        source[FULL_MERGE_SCHEMA.unique_key], cleaned[FULL_MERGE_SCHEMA.unique_key],
+        source[FULL_MERGE_SCHEMA.unique_key], inspected[FULL_MERGE_SCHEMA.unique_key],
         check_exact=True, obj="Preserved item keys and row order",
     )
     mutable = {*CITY_COLUMNS, *PHYSICAL_COLUMNS}
     preserved = [column for column in source.columns if column not in mutable]
     pd.testing.assert_frame_equal(
-        source[preserved], cleaned[preserved], check_exact=True,
+        source[preserved], inspected[preserved], check_exact=True,
         obj="Source fields outside the cleaning rules",
     )
     for column in CITY_COLUMNS:
         expected = source[column].str.strip().str.replace(r"\s+", " ", regex=True)
         pd.testing.assert_series_equal(
-            expected, cleaned[column], check_exact=True, obj=f"City whitespace: {column}",
+            expected, inspected[column], check_exact=True, obj=f"City whitespace: {column}",
         )
     invalid_measurements = source[list(PHYSICAL_COLUMNS)].le(0).fillna(False)
     for column in PHYSICAL_COLUMNS:
         expected = source[column].mask(invalid_measurements[column], pd.NA)
         pd.testing.assert_series_equal(
-            expected, cleaned[column], check_exact=True, obj=f"Physical cells: {column}",
+            expected, inspected[column], check_exact=True, obj=f"Physical cells: {column}",
         )
     expected_timeline = pd.Series(False, index=source.index, dtype=bool)
     for start, end in zip(CORE_TIMESTAMP_COLUMNS, CORE_TIMESTAMP_COLUMNS[1:]):
@@ -140,16 +142,73 @@ def validate_cleaning_output(
     for column, values in expected_flags.items():
         expected = pd.Series(values.to_numpy(dtype=bool), index=source.index, name=column)
         pd.testing.assert_series_equal(
-            expected, cleaned[column], check_exact=True, obj=f"Quality flag: {column}",
+            expected, inspected[column], check_exact=True, obj=f"Quality flag: {column}",
         )
     return pd.DataFrame({
         "check": [
-            "Clean schema and dtypes", "Item keys and row order",
+            "Inspection schema and dtypes", "Item keys and row order",
             "Preserved source fields", "City whitespace normalization",
             "Physical measurement handling", "Quality flag consistency",
         ],
         "passed": True,
     })
+
+
+def validate_cleaning_output(
+    source: pd.DataFrame,
+    cleaned: pd.DataFrame,
+) -> pd.DataFrame:
+    """Verify the exact retained order cohort and final 25-column values.
+
+    Derive eligibility independently from original status, required timestamps,
+    physical values and full-input temporal comparisons. Reject partial-order
+    removal, missing eligible items or retained ineligible orders. Preserve
+    original indexes, relative row order and every retained value except city
+    whitespace normalization. Source preservation uses a separate baseline.
+    """
+    validate_table_contract(source, FULL_MERGE_SCHEMA, table_name="cleaning_source")
+    validate_table_contract(cleaned, CLEANED_ORDER_ITEMS_SCHEMA, table_name="cleaned_order_items")
+    invalid_physical = source[list(PHYSICAL_COLUMNS)].le(0).fillna(False).any(axis=1)
+    invalid_timeline = pd.Series(False, index=source.index, dtype=bool)
+    for start, end in zip(CORE_TIMESTAMP_COLUMNS, CORE_TIMESTAMP_COLUMNS[1:]):
+        invalid_timeline |= source[end].lt(source[start]).fillna(False)
+    purchase = source["order_purchase_timestamp"]
+    deadline = source["shipping_limit_date"]
+    deadline_review = deadline.lt(purchase).fillna(False)
+    latest_purchase = purchase.max()
+    if pd.notna(latest_purchase):
+        deadline_review |= deadline.dt.year.gt(latest_purchase.year).fillna(False)
+    failures = (
+        ~source["order_status"].eq("delivered").fillna(False)
+        | source[list(REQUIRED_TIMESTAMPS)].isna().any(axis=1)
+        | invalid_physical | invalid_timeline | deadline_review
+    )
+    excluded_ids = source.loc[failures, "order_id"]
+    expected_source = source.loc[~source["order_id"].isin(excluded_ids)]
+    pd.testing.assert_index_equal(expected_source.index, cleaned.index, obj="Retained row index")
+    pd.testing.assert_frame_equal(
+        expected_source[FULL_MERGE_SCHEMA.unique_key], cleaned[FULL_MERGE_SCHEMA.unique_key],
+        check_exact=True, obj="Eligible whole orders, item keys and row order",
+    )
+    preserved = [column for column in source.columns if column not in CITY_COLUMNS]
+    pd.testing.assert_frame_equal(
+        expected_source[preserved], cleaned[preserved], check_exact=True,
+        obj="Retained source values",
+    )
+    for column in CITY_COLUMNS:
+        expected = expected_source[column].str.strip().str.replace(r"\s+", " ", regex=True)
+        pd.testing.assert_series_equal(
+            expected, cleaned[column], check_exact=True, obj=f"Retained city: {column}",
+        )
+    return pd.DataFrame({
+        "check": [
+            "Final schema and dtypes", "Eligible whole-order selection",
+            "Retained item keys and row order", "Retained source values",
+            "City whitespace normalization", "Required timestamps and delivered status",
+        ],
+        "passed": True,
+    })
+
 
 
 def assert_cleaned_roundtrip(expected: pd.DataFrame, restored: pd.DataFrame) -> None:

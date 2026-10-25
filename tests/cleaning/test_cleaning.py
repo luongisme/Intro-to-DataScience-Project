@@ -15,6 +15,8 @@ from src.cleaning import (
     CLEANED_ORDER_ITEMS_SCHEMA,
     assert_cleaned_roundtrip,
     clean_order_items,
+    inspect_order_items,
+    validate_inspected_output,
     save_cleaned_data,
     validate_cleaning_output,
     clean_physical_measurements,
@@ -354,31 +356,36 @@ def test_core_timeline_missing_endpoint_is_unknown_without_a_false_reversal(clea
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
-def test_full_cleaning_workflow_preserves_items_statuses_and_source(cleaning_full_frame):
+def test_full_cleaning_workflow_filters_orders_and_preserves_retained_values(cleaning_full_frame):
     source = cleaning_full_frame.copy(deep=True)
     source.iloc[0:2, source.columns.get_loc("customer_city")] = "  city   a "
-    source.iloc[[0, 2], source.columns.get_loc("product_weight_g")] = 0.0
-    source.iloc[2, source.columns.get_loc("order_status")] = "canceled"
+    source.iloc[2, source.columns.get_loc("customer_city")] = "  city   b "
+    source.iloc[1, source.columns.get_loc("product_weight_g")] = 0.0
+    source.iloc[0:2, source.columns.get_loc("order_status")] = "canceled"
     before = source.copy(deep=True)
 
     cleaned, details = clean_order_items(source)
     again, repeated_details = clean_order_items(source)
 
-    assert cleaned.shape == (3, 28)
+    assert cleaned.shape == (1, 25)
     assert list(cleaned.columns) == CLEANED_ORDER_ITEMS_SCHEMA.columns
-    assert cleaned["has_invalid_physical_measurement"].tolist() == [True, False, True]
-    assert cleaned["order_status"].tolist() == ["delivered", "delivered", "canceled"]
-    assert cleaned.iloc[1]["freight_value"] == 0.0
-    assert details["text_changes"]["changed_item_rows"].sum() == 2
+    assert cleaned["order_id"].tolist() == [source.iloc[2]["order_id"]]
+    assert cleaned["order_status"].tolist() == ["delivered"]
+    assert cleaned.iloc[0]["customer_city"] == "city b"
+    assert cleaned.iloc[0]["price"] == source.iloc[2]["price"]
+    assert cleaned.iloc[0]["freight_value"] == source.iloc[2]["freight_value"]
+    assert details["text_changes"]["changed_item_rows"].sum() == 3
+    assert details["inspection_checks"]["passed"].all()
     assert details["output_checks"]["passed"].all()
+    assert details["filter_flow"]["removed_orders"].sum() == 1
+    assert details["filter_flow"]["removed_item_rows"].sum() == 2
+    assert len(details["excluded_orders"]) == 1
     pd.testing.assert_frame_equal(source, before, check_exact=True)
     pd.testing.assert_frame_equal(cleaned, again, check_exact=True)
     for name in details:
         pd.testing.assert_frame_equal(details[name], repeated_details[name], check_exact=True)
     assert len(FULL_MERGE_SCHEMA.columns) == 25
-    assert all(column not in FULL_MERGE_SCHEMA.dtypes for column in (
-        "has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review",
-    ))
+    assert not {"has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review"}.intersection(cleaned.columns)
 
 
 @pytest.mark.parametrize("column,value", [
@@ -391,13 +398,13 @@ def test_full_cleaning_workflow_preserves_items_statuses_and_source(cleaning_ful
     ("has_invalid_timeline", True),
     ("needs_deadline_review", True),
 ])
-def test_output_validation_rejects_unapproved_cell_or_flag_changes(
+def test_inspection_validation_rejects_unapproved_cell_or_flag_changes(
     cleaning_full_frame, column, value,
 ):
-    cleaned, _ = clean_order_items(cleaning_full_frame)
-    cleaned.iloc[0, cleaned.columns.get_loc(column)] = value
+    inspected, _ = inspect_order_items(cleaning_full_frame)
+    inspected.iloc[0, inspected.columns.get_loc(column)] = value
     with pytest.raises(AssertionError):
-        validate_cleaning_output(cleaning_full_frame, cleaned)
+        validate_inspected_output(cleaning_full_frame, inspected)
 
 
 def test_output_validation_rejects_row_reordering(cleaning_full_frame):
@@ -422,8 +429,8 @@ def test_processed_roundtrip_preserves_types_and_supports_csv_fallback(
     assert_cleaned_roundtrip(cleaned, restored)
     assert restored.iloc[0]["customer_zip_code_prefix"] == "00123"
     assert str(restored["shipping_limit_date"].dtype) == "datetime64[us]"
-    for column in ("has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review"):
-        assert restored[column].dtype == bool
+    assert list(restored.columns) == CLEANED_ORDER_ITEMS_SCHEMA.columns
+    assert not {"has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review"}.intersection(restored.columns)
     if fallback:
         def forbidden_parquet_read(*args, **kwargs):
             pytest.fail("Explicit CSV selection must not inspect Parquet")
@@ -450,10 +457,11 @@ def test_processed_loader_reports_both_missing_formats(tmp_path, monkeypatch):
     assert ".parquet" in str(error.value) and ".csv" in str(error.value)
 
 
-def test_clean_saver_validates_before_creating_output(cleaning_full_frame, tmp_path):
+def test_clean_saver_rejects_inspection_schema_before_creating_output(cleaning_full_frame, tmp_path):
     directory = tmp_path / "not_created"
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     with pytest.raises(ValueError, match="column mismatch"):
-        save_cleaned_data(cleaning_full_frame, directory)
+        save_cleaned_data(inspected, directory)
     assert not directory.exists()
 
 
@@ -506,7 +514,7 @@ def test_notebook_executes_complete_cleaning_and_verifies_the_saved_format(
                 exec(compile(code, f"cleaning_cell_{position}", "exec"), namespace)
 
     assert workflow_spy.call_count == 1
-    assert namespace["cleaned_df"].shape == (3, 28)
+    assert namespace["cleaned_df"].shape == (3, 25)
     assert namespace["saved_path"].suffix == (".csv" if fallback else ".parquet")
     assert namespace["cleaning_details"]["output_checks"]["passed"].all()
     assert_cleaned_roundtrip(namespace["cleaned_df"], namespace["reloaded_df"])
@@ -569,14 +577,11 @@ def test_full_workflow_rejects_unapproved_transform_changes(cleaning_full_frame,
     pd.testing.assert_frame_equal(source, before, check_exact=True)
 
 
-def test_clean_csv_restores_true_flags_nulls_and_literals_after_corrupt_parquet(
+def test_clean_csv_restores_optional_nulls_and_literals_after_corrupt_parquet(
     cleaning_full_frame, tmp_path, monkeypatch,
 ):
     source = cleaning_full_frame.copy(deep=True)
-    source.iloc[[0, 2], source.columns.get_loc("product_weight_g")] = 0.0
-    source.iloc[0:2, source.columns.get_loc("order_approved_at")] = pd.Timestamp("2017-01-01 09:00")
-    source.iloc[2, source.columns.get_loc("order_delivered_customer_date")] = pd.NaT
-    source.iloc[1, source.columns.get_loc("shipping_limit_date")] = pd.Timestamp("2020-01-01")
+    source.iloc[[0, 2], source.columns.get_loc("product_weight_g")] = pd.NA
     source["product_category_name"] = pd.Series(["NA", "NULL", "NA"], index=source.index, dtype="string")
     cleaned, _ = clean_order_items(source)
 
@@ -589,12 +594,10 @@ def test_clean_csv_restores_true_flags_nulls_and_literals_after_corrupt_parquet(
     restored = load_data(CLEANED_DATASET_NAME, stage="processed")
 
     assert_cleaned_roundtrip(cleaned, restored)
-    assert restored["has_invalid_physical_measurement"].tolist() == [True, False, True]
-    assert restored["has_invalid_timeline"].tolist() == [True, True, False]
-    assert restored["needs_deadline_review"].tolist() == [False, True, False]
+    assert restored.shape == (3, 25)
     assert restored["product_category_name"].tolist() == ["NA", "NULL", "NA"]
-    assert pd.isna(restored.iloc[2]["order_delivered_customer_date"])
     assert pd.isna(restored.iloc[0]["product_weight_g"])
+    assert not {"has_invalid_physical_measurement", "has_invalid_timeline", "needs_deadline_review"}.intersection(restored.columns)
 
 
 def test_clean_save_reports_both_failures_and_preserves_previous_file(
@@ -622,7 +625,7 @@ def test_clean_save_reports_both_failures_and_preserves_previous_file(
 
 
 def test_order_filter_retains_valid_data_without_mutating_or_aliasing_input(cleaning_full_frame):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     before = inspected.copy(deep=True)
     retained, details = filter_eligible_orders(inspected)
 
@@ -645,7 +648,7 @@ def test_order_filter_retains_valid_data_without_mutating_or_aliasing_input(clea
 def test_order_filter_excludes_all_items_when_one_item_fails(
     cleaning_full_frame, column, value, reason,
 ):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     inspected.iloc[0, inspected.columns.get_loc(column)] = value
     before = inspected.copy(deep=True)
     retained, details = filter_eligible_orders(inspected)
@@ -668,7 +671,7 @@ def test_order_filter_excludes_all_items_when_one_item_fails(
 def test_order_filter_requires_all_core_and_estimated_delivery_timestamps(
     cleaning_full_frame, column,
 ):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     inspected.iloc[2, inspected.columns.get_loc(column)] = pd.NaT
     retained, details = filter_eligible_orders(inspected)
     assert len(retained) == 2
@@ -678,7 +681,7 @@ def test_order_filter_requires_all_core_and_estimated_delivery_timestamps(
 
 
 def test_order_filter_counts_overlapping_reasons_without_double_counting_removals(cleaning_full_frame):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     inspected.iloc[0, inspected.columns.get_loc("order_status")] = "canceled"
     inspected.iloc[0, inspected.columns.get_loc("order_approved_at")] = pd.NaT
     inspected.iloc[1, inspected.columns.get_loc("has_invalid_physical_measurement")] = True
@@ -702,7 +705,7 @@ def test_order_filter_counts_overlapping_reasons_without_double_counting_removal
 
 
 def test_order_filter_preserves_optional_nulls_and_zero_freight(cleaning_full_frame):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     for column in ["product_category_name", "product_weight_g"]:
         inspected.iloc[0, inspected.columns.get_loc(column)] = pd.NA
     before = inspected.copy(deep=True)
@@ -713,7 +716,7 @@ def test_order_filter_preserves_optional_nulls_and_zero_freight(cleaning_full_fr
 
 
 def test_order_filter_treats_missing_status_as_not_delivered(cleaning_full_frame):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     inspected.iloc[2, inspected.columns.get_loc("order_status")] = pd.NA
     retained, details = filter_eligible_orders(inspected)
     assert len(retained) == 2
@@ -721,7 +724,7 @@ def test_order_filter_treats_missing_status_as_not_delivered(cleaning_full_frame
 
 
 def test_order_filter_supports_empty_input_with_stable_reports(cleaning_full_frame):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     empty = inspected.iloc[:0]
     retained, details = filter_eligible_orders(empty)
     pd.testing.assert_frame_equal(retained, empty, check_exact=True)
@@ -734,7 +737,7 @@ def test_order_filter_supports_empty_input_with_stable_reports(cleaning_full_fra
 
 @pytest.mark.parametrize("problem", ["missing_flag", "nullable_flag", "duplicate_key"])
 def test_order_filter_rejects_invalid_inspection_contract(cleaning_full_frame, problem):
-    inspected, _ = clean_order_items(cleaning_full_frame)
+    inspected, _ = inspect_order_items(cleaning_full_frame)
     if problem == "missing_flag":
         inspected = inspected.drop(columns="needs_deadline_review")
     elif problem == "nullable_flag":
@@ -744,4 +747,92 @@ def test_order_filter_rejects_invalid_inspection_contract(cleaning_full_frame, p
         inspected.iloc[1, inspected.columns.get_loc("order_item_id")] = 1
     with pytest.raises(ValueError):
         filter_eligible_orders(inspected)
+
+
+@pytest.mark.parametrize("problem", ["partial_order", "retained_excluded_order", "changed_value"])
+def test_final_validation_rejects_incorrect_retained_dataset(cleaning_full_frame, problem):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[2, source.columns.get_loc("order_status")] = "canceled"
+    cleaned, _ = clean_order_items(source)
+    if problem == "partial_order":
+        cleaned = cleaned.iloc[1:]
+    elif problem == "retained_excluded_order":
+        cleaned = source.copy(deep=True)
+    else:
+        cleaned.iloc[0, cleaned.columns.get_loc("price")] += 1.0
+    with pytest.raises(AssertionError):
+        validate_cleaning_output(source, cleaned)
+
+
+def test_full_workflow_rejects_an_incorrect_filter_result(cleaning_full_frame, monkeypatch):
+    import src.cleaning.workflow as workflow
+
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[2, source.columns.get_loc("order_status")] = "canceled"
+    before = source.copy(deep=True)
+    correct_filter = workflow.filter_eligible_orders
+
+    def faulty_filter(inspected):
+        _, details = correct_filter(inspected)
+        return inspected.copy(deep=True), details
+
+    monkeypatch.setattr(workflow, "filter_eligible_orders", faulty_filter)
+    with pytest.raises(AssertionError):
+        clean_order_items(source)
+    pd.testing.assert_frame_equal(source, before, check_exact=True)
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_empty_retained_dataset_preserves_schema_and_roundtrips(
+    cleaning_full_frame, tmp_path, monkeypatch, fallback,
+):
+    source = cleaning_full_frame.copy(deep=True)
+    source["order_status"] = pd.Series("canceled", index=source.index, dtype="string")
+    cleaned, details = clean_order_items(source)
+    assert cleaned.shape == (0, 25)
+    assert details["output_checks"]["passed"].all()
+    assert details["filter_flow"]["removed_orders"].sum() == 2
+    if fallback:
+        def unavailable_writer(*args, **kwargs):
+            raise ImportError("Simulated unavailable Parquet engine")
+        monkeypatch.setattr("src.pipeline.io.dataset_io.write_parquet_dataset", unavailable_writer)
+    save_cleaned_data(cleaned, tmp_path)
+    monkeypatch.setattr("src.data_loader.PROCESSED_DIR", tmp_path)
+    assert_cleaned_roundtrip(cleaned, load_data(CLEANED_DATASET_NAME, stage="processed"))
+
+
+def test_inspection_remains_available_with_original_items_and_flags(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    source.iloc[1, source.columns.get_loc("product_weight_g")] = 0.0
+    inspected, details = inspect_order_items(source)
+    assert inspected.shape == (3, 28)
+    assert inspected["has_invalid_physical_measurement"].tolist() == [False, True, False]
+    assert details["inspection_checks"]["passed"].all()
+    cleaned, _ = clean_order_items(source)
+    assert cleaned.shape == (1, 25)
+    assert cleaned["order_id"].tolist() == [source.iloc[2]["order_id"]]
+
+
+def test_final_validation_keeps_full_input_deadline_year_reference(cleaning_full_frame):
+    source = cleaning_full_frame.copy(deep=True)
+    timestamps = {
+        "order_purchase_timestamp": "2017-12-30 10:00",
+        "order_approved_at": "2017-12-30 11:00",
+        "order_delivered_carrier_date": "2017-12-31 10:00",
+        "order_delivered_customer_date": "2018-01-02 10:00",
+        "order_estimated_delivery_date": "2018-01-05",
+        "shipping_limit_date": "2018-01-01",
+    }
+    for column, value in timestamps.items():
+        source.iloc[0:2, source.columns.get_loc(column)] = pd.Timestamp(value)
+        source.iloc[2, source.columns.get_loc(column)] = pd.Timestamp("2018-02-05")
+    source.iloc[2, source.columns.get_loc("order_status")] = "canceled"
+
+    cleaned, details = clean_order_items(source)
+
+    assert cleaned.shape == (2, 25)
+    assert cleaned["order_purchase_timestamp"].dt.year.eq(2017).all()
+    assert cleaned["shipping_limit_date"].dt.year.eq(2018).all()
+    assert details["deadlines"].iloc[1]["reference"] == "Latest observed purchase year: 2018"
+    assert details["output_checks"]["passed"].all()
 

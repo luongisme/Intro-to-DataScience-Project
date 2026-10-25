@@ -3,14 +3,15 @@
 import pandas as pd
 
 from src.cleaning.measurements import INVALID_PHYSICAL_FLAG
-from src.cleaning.schema import FLAGGED_ORDER_ITEMS_SCHEMA, QUALITY_FLAG_COLUMNS
+from src.cleaning.schema import (
+    FLAGGED_ORDER_ITEMS_SCHEMA, QUALITY_FLAG_COLUMNS, REQUIRED_TIMESTAMPS,
+)
 from src.cleaning.timeline import (
-    CORE_TIMESTAMP_COLUMNS, DEADLINE_REVIEW_FLAG, INVALID_TIMELINE_FLAG,
+    DEADLINE_REVIEW_FLAG, INVALID_TIMELINE_FLAG,
 )
 from src.pipeline.contracts.validator import validate_table_contract
 
 
-REQUIRED_TIMESTAMPS = (*CORE_TIMESTAMP_COLUMNS, "order_estimated_delivery_date")
 EXCLUSION_REASONS = (
     "not_delivered",
     "missing_required_timestamp",

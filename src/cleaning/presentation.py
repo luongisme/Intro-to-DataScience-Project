@@ -54,7 +54,20 @@ COLUMN_LABELS = {
     "nonpositive_item_rows": "Nonpositive Item Rows",
     "affected_products": "Affected Products",
     "affected_orders": "Affected Orders",
-    "check": "Timestamp Check",
+    "check": "Check",
+    "passed": "Passed",
+    "reason": "Exclusion Reason",
+    "step": "Filtering Step",
+    "input": "Before Cleaning",
+    "retained": "After Cleaning",
+    "removed": "Removed",
+    "removed_orders": "Newly Removed Orders",
+    "removed_item_rows": "Newly Removed Items",
+    "remaining_orders": "Remaining Orders",
+    "remaining_item_rows": "Remaining Items",
+    "affected_item_rows": "Affected Items",
+    "not_delivered": "Status Other Than Delivered",
+    "missing_required_timestamp": "Missing Required Timestamp",
     "orders": "Orders",
     "comparable_orders": "Comparable Orders",
     "unknown_orders": "Unassessable Orders",
@@ -81,6 +94,15 @@ COLUMN_LABELS = {
     "affected_pct_all": "Affected All Rows (%)",
     "flagged_pct_evaluated": "Flagged Comparable Orders (%)",
     "outside_iqr_pct": "Outside IQR (%)",
+}
+
+EXCLUSION_LABELS = {
+    "input": "Full Input",
+    "not_delivered": "Status Other Than Delivered",
+    "missing_required_timestamp": "Missing Required Timestamp",
+    "has_invalid_timeline": "Core Timestamp Reversal",
+    "has_invalid_physical_measurement": "Invalid Physical Measurement",
+    "needs_deadline_review": "Shipping Deadline Needs Review",
 }
 
 DISPLAY_ORDER = (
@@ -141,6 +163,8 @@ def _format_value(value, column: str) -> str:
             return f"{float(value):,.2f}%"
         return _format_number(value)
     if isinstance(value, str):
+        if column in {"reason", "step"}:
+            return EXCLUSION_LABELS.get(value, value.replace("_", " ").title())
         if column == "order_status":
             return value.title()
         if column == "product_category_name":
