@@ -1,11 +1,12 @@
-"""Load raw source files or schema-aware registered/custom interim datasets."""
+"""Load raw sources or schema-aware interim and processed datasets."""
 
 from typing import Any, Dict
 from pathlib import Path
 
 import pandas as pd
 
-from src.paths import RAW_DIR, INTERIM_DIR
+from src.paths import RAW_DIR, INTERIM_DIR, PROCESSED_DIR
+from src.cleaning.schema import CLEANED_DATASET_NAME, CLEANED_ORDER_ITEMS_SCHEMA
 from src.pipeline.io.dataset_io import read_dataset
 from src.pipeline.merging.registry import build_dataset_registry
 from src.pipeline.contracts.schema import TableSchema
@@ -25,8 +26,11 @@ DATASETS: Dict[str, str] = {
 }
 
 
-# Canonical interim plans and schemas; actual format selection belongs to I/O.
+# Canonical saved-dataset schemas; actual format selection belongs to I/O.
 INTERIM_DATASETS: Dict[str, Dict[str, Any]] = build_dataset_registry()
+PROCESSED_DATASETS: Dict[str, Dict[str, Any]] = {
+    CLEANED_DATASET_NAME: {"schema": CLEANED_ORDER_ITEMS_SCHEMA},
+}
 
 
 def load_data(
@@ -34,59 +38,41 @@ def load_data(
     stage: str = "raw",
     **kwargs: Any,
 ) -> pd.DataFrame:
-    """Load a raw source or a schema-aware saved merge dataset.
+    """Load raw sources or saved datasets with a declared stage contract.
 
-    Preserve the raw-stage pandas reader behavior and its **kwargs forwarding.
-    For interim data, reuse read_dataset for type restoration, validation and
-    format selection instead of dispatching directly to pandas. The existing
-    name/stage call signature and full name 'merged_order_items' are retained.
+    Raw reader kwargs retain their pandas behavior. Interim/processed readers
+    accept file_format='parquet' (default with CSV fallback) or 'csv' (direct),
+    plus schema for custom names. Registered names have a fixed schema that an
+    explicit override must equal. Custom names require schema=TableSchema(...).
+    Other saved-dataset parser kwargs are rejected to preserve validated types.
 
-    Interim names in INTERIM_DATASETS automatically use their registered
-    schema. An explicit schema must equal that fixed contract; do not weaken
-    a registered dataset's validation. A custom unregistered name requires
-    schema=TableSchema(...). The shared reader validates custom names/schema.
-
-    Interim kwargs accept file_format='parquet' (default, with CSV fallback)
-    or 'csv' (direct CSV), and schema for an explicit contract. Reject other
-    parser kwargs rather than silently changing the validated output schema.
-    Select/transform columns after loading. Do not interpret file_format or
-    schema specially for raw data; raw kwargs still reach pandas unchanged.
-
-    Args:
-        name: Registered raw/interim dataset or a custom interim filename stem.
-        stage: 'raw' or 'interim', including the existing positional argument.
-        **kwargs: Pandas reader options for raw data; file_format/schema only
-            for interim data.
-
-    Returns:
-        A DataFrame; interim columns, dtypes and constraints follow the schema.
-
-    Raises:
-        TypeError: If interim schema has the wrong type or unsupported parser
-            options are supplied; raw pandas argument errors propagate.
-        ValueError: If stage/name/configuration or the interim contract is invalid.
-        FileNotFoundError: If a raw file or explicitly selected CSV is missing.
-        RuntimeError: If both interim Parquet and CSV read attempts fail.
-        Exception: Other direct CSV/raw read failures propagate unchanged.
+    The processed name 'cleaned_order_items' uses the fixed 25-column contract
+    for retained items.
+    Both saved stages delegate to the shared reader for dtype restoration,
+    column/key checks, format announcements and error guidance. No cleaning or
+    saving occurs here. Failed direct CSV reads propagate their original error;
+    failure of both default format attempts raises RuntimeError with causes.
     """
 
     if stage == "raw":
         registry = DATASETS
         data_dir = RAW_DIR
 
-    elif stage == "interim":
+    elif stage in ("interim", "processed"):
+        registry = INTERIM_DATASETS if stage == "interim" else PROCESSED_DATASETS
+        data_dir = INTERIM_DIR if stage == "interim" else PROCESSED_DIR
         file_format = kwargs.pop("file_format", "parquet")
         schema = kwargs.pop("schema", None)
         if kwargs:
             raise TypeError(
-                f"Unsupported interim reader options: {sorted(kwargs)}. "
+                f"Unsupported {stage} reader options: {sorted(kwargs)}. "
                 "Use file_format/schema, then select or transform the loaded "
                 "DataFrame. Pandas parser options are supported for raw data only."
             )
         if schema is not None and not isinstance(schema, TableSchema):
             raise TypeError("schema must be a TableSchema or None.")
-        if name in INTERIM_DATASETS:
-            canonical = INTERIM_DATASETS[name]["schema"]
+        if name in registry:
+            canonical = registry[name]["schema"]
             if schema is not None and schema != canonical:
                 raise ValueError(
                     f"Dataset '{name}' has a fixed registered schema. "
@@ -96,17 +82,17 @@ def load_data(
         elif schema is None:
             raise ValueError(
                 f"Unknown dataset '{name}' in stage '{stage}'. "
-                f"Available datasets: {list(INTERIM_DATASETS)}. "
-                "Supply schema=TableSchema(...) to read a custom interim dataset."
+                f"Available datasets: {list(registry)}. "
+                "Supply schema=TableSchema(...) to read a custom saved dataset."
             )
         return read_dataset(
-            INTERIM_DIR, schema, dataset_name=name, file_format=file_format
+            data_dir, schema, dataset_name=name, file_format=file_format
         )
 
     else:
         raise ValueError(
             f"Unknown stage '{stage}'. "
-            "Available stages: ['raw', 'interim']"
+            "Available stages: ['raw', 'interim', 'processed']"
         )
 
     if name not in registry:
