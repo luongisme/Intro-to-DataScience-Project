@@ -19,7 +19,7 @@ from src.paths import PROJECT_ROOT
 from src.eda import workflow
 
 pytestmark = pytest.mark.usefixtures("eda_plot_cleanup")
-NOTEBOOK_PATH = Path(os.environ.get("EDA_NOTEBOOK_PATH", PROJECT_ROOT / "notebooks/01_data_loading.ipynb"))
+NOTEBOOK_PATH = Path(os.environ.get("EDA_NOTEBOOK_PATH", PROJECT_ROOT / "notebooks/01_exploratory_data_analysis.ipynb"))
 
 
 def _read_notebook():
