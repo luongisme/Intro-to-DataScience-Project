@@ -1,0 +1,11 @@
+axis,value,orders,late,late_rate_pct,ci_low_pct,ci_high_pct
+Hour of day (slot),Late night 00-08 (off),22254,1615,7.26,6.92,7.61
+Hour of day (slot),Morning 08-12 (in),15675,983,6.27,5.9,6.66
+Hour of day (slot),Afternoon 12-18 (in),30450,2085,6.85,6.57,7.14
+Hour of day (slot),Evening 18-24 (off),26703,1826,6.84,6.54,7.15
+In/Off hours,In-hours,46125,3068,6.65,6.43,6.88
+In/Off hours,Off-hours,48957,3441,7.03,6.81,7.26
+Weekday/Weekend,Weekday,74533,5181,6.95,6.77,7.14
+Weekday/Weekend,Weekend,20549,1328,6.46,6.13,6.81
+Season,Black Friday week,2716,450,16.57,15.22,18.01
+Season,Off-peak,92366,6059,6.56,6.4,6.72

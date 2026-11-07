@@ -1,0 +1,3 @@
+carrier_ts_regime,orders,modal_hour,peak_hours,share_in_peak_hours_pct
+A: before 25/04/2018,68614,19,"15h, 16h, 17h, 18h, 19h, 20h, 21h, 22h",64.6
+B: from 25/04/2018,26468,14,"11h, 12h, 13h, 14h, 15h",75.3

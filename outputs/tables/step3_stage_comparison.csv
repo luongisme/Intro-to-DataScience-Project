@@ -1,0 +1,5 @@
+,on_time_median,late_median,diff_days,ratio,share_of_gap_pct
+approval_days,0.01,0.02,0.0,1.19,0.0
+processing_lead_time,1.25,2.09,0.84,1.67,5.9
+carrier_transit_time,4.93,18.25,13.33,3.71,94.1
+lead_days,9.86,31.26,21.39,3.17,
