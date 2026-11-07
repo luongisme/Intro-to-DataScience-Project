@@ -1,0 +1,5 @@
+carrier_ts_regime,missed_cutoff,orders,late,median_wait_h,late_rate_pct,ci_low_pct,ci_high_pct
+A: before 25/04/2018,False,30712,2349,35.3,7.65,7.36,7.95
+A: before 25/04/2018,True,22549,1815,47.6,8.05,7.7,8.41
+B: from 25/04/2018,False,11677,561,24.6,4.8,4.43,5.21
+B: from 25/04/2018,True,9595,456,24.1,4.75,4.34,5.2

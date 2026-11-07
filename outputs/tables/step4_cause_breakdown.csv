@@ -1,0 +1,5 @@
+cause,orders,median_delay_days,total_delay_days,share_orders_pct,share_delay_days_pct
+1. Seller only,1311,5.0,9074,20.1,13.1
+2. Carrier only,2985,10.0,43428,45.9,62.8
+3. Both,503,12.0,8791,7.7,12.7
+4. Neither,1710,4.0,7858,26.3,11.4

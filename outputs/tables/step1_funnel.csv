@@ -1,0 +1,4 @@
+step,removed,remaining,note
+delivered valid,0,96447,
+Drop orders missing core timestamps,15,96432,"14 missing order_approved_at, 1 missing order_delivered_carrier_date"
+Drop orders with negative time intervals,1350,95082,"carrier_before_approval: 1350, carrier_before_purchase: 165, customer_before_approval: 61"
