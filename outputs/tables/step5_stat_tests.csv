@@ -1,5 +1,5 @@
 axis_column,chi2,dof,p_value,cramers_v,significant_5pct,effect_size
-approve_slot,14.02,3,0.0028724959991988114,0.0121,True,negligible
-hours_type,5.3,1,0.0213655021932964,0.0075,True,negligible
-day_type,6.03,1,0.014047384568952118,0.008,True,negligible
+approve_slot,14.02,3,0.0028724959991988167,0.0121,True,negligible
+hours_type,5.3,1,0.021365502193296377,0.0075,True,negligible
+day_type,6.03,1,0.014047384568952152,0.008,True,negligible
 season,414.46,1,3.923659931117535e-92,0.066,True,negligible
