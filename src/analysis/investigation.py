@@ -11,6 +11,68 @@ ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
 REVIEW_DESTINATION = "Requires review"
 
 
+def summarize_focus_time(inter: pd.DataFrame, leading_pair: tuple[str, str] | None) -> dict[str, pd.DataFrame]:
+    """Compare purchase months and approval hours/weekdays for a leading state pair."""
+    required = {"order_id", "seller_group", "seller_state", "customer_state", "route_type",
+                "is_late", "order_purchase_timestamp", "approval_hour", "approval_weekday"}
+    missing = required.difference(inter.columns)
+    if missing:
+        raise ValueError(f"Missing time comparison columns: {sorted(missing)}")
+    if inter["order_id"].isna().any() or not inter["order_id"].is_unique:
+        raise ValueError("Time comparisons require one row per non-null order_id.")
+    if not inter["route_type"].eq("Inter-state").all():
+        raise ValueError("Time comparison input must contain only inter-state orders.")
+    if inter["order_purchase_timestamp"].isna().any() or inter["is_late"].isna().any():
+        raise ValueError("Purchase time and delivery outcome must be complete.")
+    if not inter["approval_hour"].isin(range(12, 18)).all():
+        raise ValueError("Approval hours must belong to the 12:00–18:00 slot.")
+    if not inter["approval_weekday"].isin(range(7)).all():
+        raise ValueError("Approval weekdays must be numbered 0–6.")
+
+    scopes = [("All inter-state orders", inter)]
+    if leading_pair is not None:
+        seller, customer = leading_pair
+        chosen = inter.loc[inter["seller_group"].eq("Single seller state")
+                           & inter["seller_state"].eq(seller).fillna(False)
+                           & inter["customer_state"].eq(customer).fillna(False)]
+        if chosen.empty:
+            raise ValueError("The selected state pair has no eligible orders.")
+        scopes.append((f"{seller} → {customer}", chosen))
+
+    months = (pd.period_range(inter["order_purchase_timestamp"].min().to_period("M"),
+                              inter["order_purchase_timestamp"].max().to_period("M"), freq="M")
+              if not inter.empty else pd.PeriodIndex([], freq="M"))
+    results = {"monthly": [], "hours": [], "weekdays": [], "matched_years": []}
+
+    def count(frame: pd.DataFrame, values: pd.Series, index: pd.Index, label: str) -> pd.DataFrame:
+        table = frame.groupby(values, observed=True).agg(
+            orders=("order_id", "size"), late_orders=("is_late", "sum"),
+        ).reindex(index, fill_value=0).rename_axis(label).reset_index()
+        table["orders"] = table["orders"].astype("int64")
+        table["late_orders"] = table["late_orders"].astype("int64")
+        table["late_rate_pct"] = 100 * table["late_orders"] / table["orders"].replace(0, np.nan)
+        return table
+
+    for scope, frame in scopes:
+        purchase = frame["order_purchase_timestamp"]
+        monthly = count(frame, purchase.dt.to_period("M"), months, "purchase_month")
+        monthly["purchase_month"] = monthly["purchase_month"].astype(str)
+        results["monthly"].append(monthly.assign(scope=scope))
+        results["hours"].append(count(frame, frame["approval_hour"],
+                                       pd.Index(range(12, 18)), "approval_hour").assign(scope=scope))
+        results["weekdays"].append(count(frame, frame["approval_weekday"],
+                                          pd.Index(range(7)), "approval_weekday").assign(scope=scope))
+        for year in (2017, 2018):
+            selected = frame.loc[purchase.dt.year.eq(year) & purchase.dt.month.between(1, 7)]
+            orders = len(selected)
+            late = int(selected["is_late"].sum())
+            results["matched_years"].append({"scope": scope, "year": year,
+                                             "orders": orders, "late_orders": late,
+                                             "late_rate_pct": 100 * late / orders if orders else np.nan})
+    return {name: (pd.concat(tables, ignore_index=True) if name != "matched_years"
+                   else pd.DataFrame(tables)) for name, tables in results.items()}
+
+
 def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Count inter-state orders by seller and customer state without splitting orders."""
     required_items = {"order_id", "seller_state"}

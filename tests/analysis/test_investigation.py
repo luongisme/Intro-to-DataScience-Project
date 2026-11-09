@@ -6,7 +6,7 @@ import pytest
 from src.analysis.investigation import (
     measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
     investigate_delivery_stages, classify_order_routes, build_focus_cohort,
-    summarize_destination_states, summarize_state_pairs, REVIEW_DESTINATION,
+    summarize_destination_states, summarize_state_pairs, summarize_focus_time, REVIEW_DESTINATION,
 )
 from src.analysis.orders import SLOT_LABELS
 
@@ -259,6 +259,88 @@ def test_state_pair_figure_uses_count_ranking_and_handles_empty_results():
     figure = plot_state_pairs(pairs.iloc[:0], float("nan"))
     figure.canvas.draw()
     plt.close(figure)
+
+
+def test_focus_time_preserves_cohorts_and_empty_calendar_groups():
+    inter = pd.DataFrame({
+        "order_id": ["A", "B", "C"],
+        "seller_group": ["Single seller state"] * 3,
+        "seller_state": ["SP", "SP", "MG"],
+        "customer_state": ["RJ", "RJ", "BA"],
+        "route_type": ["Inter-state"] * 3,
+        "is_late": [True, False, True],
+        "order_purchase_timestamp": pd.to_datetime(["2017-01-03", "2017-03-02", "2018-01-05"]),
+        "approval_hour": [12, 17, 12], "approval_weekday": [1, 3, 4],
+    })
+    before = inter.copy(deep=True)
+    result = summarize_focus_time(inter, ("SP", "RJ"))
+    for key in ("monthly", "hours", "weekdays"):
+        table = result[key]
+        totals = table.groupby("scope")[["orders", "late_orders"]].sum()
+        assert totals.loc["All inter-state orders"].tolist() == [3, 2]
+        assert totals.loc["SP → RJ"].tolist() == [2, 1]
+    february = result["monthly"].loc[result["monthly"]["purchase_month"].eq("2017-02")]
+    assert february["orders"].eq(0).all()
+    assert february["late_rate_pct"].isna().all()
+    matched = result["matched_years"].set_index(["scope", "year"])
+    assert matched.loc[("SP → RJ", 2017), "orders"] == 2
+    assert matched.loc[("SP → RJ", 2018), "orders"] == 0
+    assert pd.isna(matched.loc[("SP → RJ", 2018), "late_rate_pct"])
+    assert len(result["hours"]) == 12
+    assert len(result["weekdays"]) == 14
+    pd.testing.assert_frame_equal(inter, before)
+
+
+def test_focus_time_handles_no_leading_pair_and_empty_interstate_cohort():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from src.analysis.investigation_plots import plot_focus_months, plot_focus_approval_time
+
+    inter = pd.DataFrame({
+        "order_id": ["A"], "seller_group": ["Multiple seller states"],
+        "seller_state": [pd.NA], "customer_state": ["RJ"], "route_type": ["Inter-state"],
+        "is_late": [False], "order_purchase_timestamp": pd.to_datetime(["2017-01-03"]),
+        "approval_hour": [12], "approval_weekday": [1],
+    })
+    result = summarize_focus_time(inter, None)
+    assert result["monthly"]["scope"].unique().tolist() == ["All inter-state orders"]
+    assert summarize_focus_time(inter.iloc[:0], None)["monthly"].empty
+    with pytest.raises(ValueError, match="no eligible orders"):
+        summarize_focus_time(inter, ("SP", "RJ"))
+    empty = summarize_focus_time(inter.iloc[:0], None)
+    figures = [plot_focus_months(empty["monthly"]),
+               plot_focus_approval_time(empty["hours"], empty["weekdays"])]
+    try:
+        for figure in figures:
+            figure.canvas.draw()
+    finally:
+        for figure in figures:
+            plt.close(figure)
+
+
+def test_focus_time_figures_render_with_missing_months():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from src.analysis.investigation_plots import plot_focus_months, plot_focus_approval_time
+
+    inter = pd.DataFrame({
+        "order_id": ["A", "B"], "seller_group": ["Single seller state"] * 2,
+        "seller_state": ["SP"] * 2, "customer_state": ["RJ"] * 2,
+        "route_type": ["Inter-state"] * 2, "is_late": [True, False],
+        "order_purchase_timestamp": pd.to_datetime(["2017-01-03", "2017-03-02"]),
+        "approval_hour": [12, 17], "approval_weekday": [1, 3],
+    })
+    result = summarize_focus_time(inter, ("SP", "RJ"))
+    figures = [plot_focus_months(result["monthly"]),
+               plot_focus_approval_time(result["hours"], result["weekdays"])]
+    try:
+        for figure in figures:
+            figure.canvas.draw()
+    finally:
+        for figure in figures:
+            plt.close(figure)
 
 
 def test_periods_use_purchase_month_and_keep_empty_months_and_slots():

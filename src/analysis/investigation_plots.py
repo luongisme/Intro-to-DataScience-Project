@@ -10,6 +10,76 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_focus_months(monthly):
+    """Show monthly late rates and order denominators for both focus scopes."""
+    figure, axes = plt.subplots(3, 1, figsize=(13, 9.5), sharex=True, layout="constrained")
+    months = monthly["purchase_month"].drop_duplicates().tolist()
+    for scope, color in zip(monthly["scope"].drop_duplicates(), ("#377eb8", "#388443")):
+        rows = monthly.loc[monthly["scope"].eq(scope)].set_index("purchase_month").reindex(months)
+        x = np.arange(len(months))
+        for ax in axes[:2]:
+            ax.plot(x, rows["late_rate_pct"].to_numpy(dtype=float), marker="o", markersize=3,
+                    label=scope, color=color)
+        axes[2].plot(x, rows["orders"].to_numpy(dtype=float), marker="o", markersize=3,
+                     label=scope, color=color)
+    recent = monthly.loc[monthly["purchase_month"].ge("2017-01"), "late_rate_pct"].dropna()
+    detail_limit = min(100, max(10, np.ceil(recent.max() / 10) * 10)) if not recent.empty else 100
+    axes[1].set_ylim(0, detail_limit)
+    for ax in axes[:2]:
+        ax.set_ylabel("Late orders / monthly orders (%)")
+    axes[2].set_ylabel("Orders (N)")
+    axes[0].set_title("Monthly late rate · full range")
+    axes[1].set_title(f"Monthly late rate · detail to {detail_limit:.0f}%")
+    axes[2].set_title("Order counts by purchase month")
+    axes[2].set_xticks(range(0, len(months), 2), months[::2], rotation=45, ha="right")
+    if months:
+        axes[0].legend(frameon=False)
+    scope_title = ("Inter-state orders and leading state pair" if monthly["scope"].nunique() > 1
+                   else "Inter-state orders")
+    figure.suptitle(f"{scope_title} | Approved 12:00–18:00")
+    figure.supxlabel("Purchase month · No-order months have no defined late rate")
+    return figure
+
+
+def plot_focus_approval_time(hours, weekdays):
+    """Show late counts, rates and denominators by approval hour and weekday."""
+    figure, axes = plt.subplots(2, 2, figsize=(14, 8.5), layout="constrained")
+    for row, (table, key, labels, period) in enumerate((
+        (hours, "approval_hour", [f"{hour:02d}:00" for hour in range(12, 18)], "approval hour"),
+        (weekdays, "approval_weekday", ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+         "approval weekday"),
+    )):
+        scopes = table["scope"].drop_duplicates().tolist()
+        positions = np.arange(len(labels))
+        width = 0.8 / max(len(scopes), 1)
+        for offset, (scope, color) in enumerate(zip(scopes, ("#377eb8", "#388443"))):
+            values = table.loc[table["scope"].eq(scope)].sort_values(key)
+            x = positions + (offset - (len(scopes) - 1) / 2) * width
+            axes[row, 0].bar(x, values["late_orders"], width=width, color=color, label=scope)
+            rates = values["late_rate_pct"].to_numpy(dtype=float)
+            axes[row, 1].bar(x, rates, width=width, color=color, label=scope)
+            for position, rate, orders in zip(x, rates, values["orders"]):
+                if np.isfinite(rate):
+                    axes[row, 1].annotate(f"N={int(orders):,}", (position, rate),
+                                          xytext=(0, 3), textcoords="offset points",
+                                          rotation=90, ha="center", va="bottom", fontsize=7)
+        for ax in axes[row]:
+            ax.set_xticks(positions, labels)
+        axes[row, 0].set_title(f"Late order counts by {period}")
+        axes[row, 1].set_title(f"Late delivery rates by {period}")
+        axes[row, 0].set_ylabel("Late orders")
+        axes[row, 1].set_ylabel("Late orders / group orders (%)")
+        axes[row, 1].set_ylim(0, max(table["late_rate_pct"].max(skipna=True) * 1.45, 1)
+                              if not table.empty and table["late_rate_pct"].notna().any() else 1)
+    if not hours.empty:
+        axes[0, 0].legend(frameon=False)
+    scope_title = ("Inter-state orders and leading state pair" if hours["scope"].nunique() > 1
+                   else "Inter-state orders")
+    figure.suptitle(f"{scope_title} | Approved 12:00–18:00")
+    figure.supxlabel("N = all orders in the scope and approval-time group")
+    return figure
+
+
 def plot_state_pairs(pairs, inter_late_rate, top_n=5):
     """Plot leading seller-to-customer state pairs by late inter-state orders."""
     if top_n < 1:
