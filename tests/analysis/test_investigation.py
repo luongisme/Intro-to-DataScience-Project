@@ -117,6 +117,29 @@ def test_stage_summaries_preserve_orders_and_report_invalid_endpoints():
     pd.testing.assert_frame_equal(orders, before)
 
 
+def test_stage_intervals_follow_orders_with_repeated_dataframe_indexes():
+    orders = sample_orders()
+    orders["order_delivered_carrier_date"] = orders["order_approved_at"] + pd.to_timedelta([1, 2, 3], unit="h")
+    orders["order_delivered_customer_date"] = orders["order_delivered_carrier_date"] + pd.to_timedelta([7, 5, 4], unit="h")
+    orders.index = [0, 0, 1]
+    result = investigate_delivery_stages(orders)
+    by_order = result["records"].pivot(index="order_id", columns="stage", values="calendar_hours")
+    assert by_order["Processing"].to_dict() == {"A": 1, "B": 2, "C": 3}
+    assert by_order["Carrier transit"].to_dict() == {"A": 7, "B": 5, "C": 4}
+
+
+def test_pooled_median_uses_each_valid_interval_once_across_slots():
+    orders = sample_orders()
+    orders["is_late"] = False
+    orders["approval_slot"] = [SLOT_LABELS[0], SLOT_LABELS[0], SLOT_LABELS[1]]
+    orders["order_approved_at"] = pd.Timestamp("2018-07-02 00:00")
+    orders["order_delivered_carrier_date"] = orders["order_approved_at"] + pd.to_timedelta([1, 3, 21], unit="h")
+    pooled = investigate_delivery_stages(orders)["pooled_medians"].set_index("stage")
+    assert pooled.loc["Processing", "on_time_calendar_hours"] == 3
+    assert pooled.loc["Processing", "on_time_eligible_hours"] == 3
+    assert pd.isna(pooled.loc["Processing", "late_calendar_hours"])
+
+
 def test_investigation_figures_render_for_an_empty_cohort():
     import matplotlib
     matplotlib.use("Agg")

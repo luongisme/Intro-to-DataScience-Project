@@ -221,6 +221,9 @@ def measure_stage_hours(start: pd.Series, end: pd.Series) -> pd.DataFrame:
 
 def investigate_delivery_stages(orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Return stage records, valid-duration summaries and promised-date windows."""
+    if orders["order_id"].isna().any() or not orders["order_id"].is_unique:
+        raise ValueError("Stage durations require one row per non-null order_id.")
+    orders = orders.reset_index(drop=True)
     records = []
     for name, start, end in (
         ("Processing", "order_approved_at", "order_delivered_carrier_date"),
@@ -230,6 +233,12 @@ def investigate_delivery_stages(orders: pd.DataFrame) -> dict[str, pd.DataFrame]
         durations = measure_stage_hours(orders[start], orders[end])
         records.append(frame.join(durations).assign(stage=name))
     stages = pd.concat(records, ignore_index=True)
+    hours = ["calendar_hours", "eligible_hours"]
+    pooled = stages.groupby(["stage", "is_late"])[hours].median().unstack("is_late")
+    pooled = pooled.reindex(index=["Processing", "Carrier transit"],
+                            columns=pd.MultiIndex.from_product([hours, [False, True]]))
+    pooled.columns = ["on_time_calendar_hours", "late_calendar_hours",
+                      "on_time_eligible_hours", "late_eligible_hours"]
     summary = stages.groupby(["stage", "approval_slot", "is_late"], observed=True).agg(
         orders=("order_id", "size"), evaluated=("calendar_hours", "count"),
         mean_calendar_hours=("calendar_hours", "mean"), median_calendar_hours=("calendar_hours", "median"),
@@ -245,6 +254,6 @@ def investigate_delivery_stages(orders: pd.DataFrame) -> dict[str, pd.DataFrame]
         max_days=("promised_days", "max"),
     ).reset_index()
     quality = stages.groupby(["stage", "status"]).size().rename("orders").reset_index()
-    return {"records": stages, "summary": summary, "quality": quality,
+    return {"records": stages, "summary": summary, "pooled_medians": pooled.reset_index(), "quality": quality,
             "windows": windows, "promised_summary": promised,
             "negative_windows": windows.loc[windows["promised_days"].lt(0)].copy()}
