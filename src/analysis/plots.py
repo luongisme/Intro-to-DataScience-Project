@@ -50,13 +50,13 @@ def plot_slot_counts(summary: pd.DataFrame) -> Figure:
     ax.bar(x, summary["late_orders"], bottom=summary["on_time_orders"],
            color=LATE_COLOR, label="Late")
     for position, row in enumerate(summary.itertuples(index=False)):
-        ax.annotate(f"N={row.orders:,}\nLate={row.late_orders:,}",
+        ax.annotate(f"Total {row.orders:,}\nLate {row.late_orders:,}",
                     (position, row.orders), xytext=(0, 5), textcoords="offset points",
                     ha="center", va="bottom", fontsize=9)
     ax.set_xticks(x, summary["approval_slot"])
     ax.set_ylabel("Orders")
     ax.set_xlabel("Approval time slot")
-    ax.set_title("Delivered orders by approval time slot")
+    ax.set_title("On-time and late deliveries by approval slot")
     ax.set_ylim(0, max(summary["orders"].max() * 1.16, 1))
     ax.legend(frameon=False)
     return figure
@@ -71,18 +71,20 @@ def plot_rate_profile(profile: pd.DataFrame, column: str) -> Figure:
         figsize=(14, 5.6) if hourly else (10.5, 5.2), layout="constrained"
     )
     x = profile[column].to_numpy()
-    rates = profile["late_rate_pct"].fillna(0).to_numpy(dtype=float)
+    rates = profile["late_rate_pct"].to_numpy(dtype=float, na_value=np.nan)
     ax.bar(x, rates, color=ON_TIME_COLOR, width=0.78)
     for position, row in enumerate(profile.itertuples(index=False)):
-        if row.orders:
-            ax.annotate(f"N={row.orders:,}", (x[position], rates[position]),
-                        xytext=(0, 4), textcoords="offset points", ha="center",
-                        va="bottom", fontsize=8, rotation=90 if hourly else 0)
+        height = rates[position] if row.orders else 0
+        ax.annotate(f"N={row.orders:,}", (x[position], height),
+                    xytext=(0, 4), textcoords="offset points", ha="center",
+                    va="bottom", fontsize=8, rotation=90 if hourly else 0)
     ax.set_xticks(x, [f"{value:02d}" for value in x] if hourly else WEEKDAYS)
     ax.set_xlabel("Approval hour (recorded clock)" if hourly else "Approval weekday")
-    ax.set_ylabel("Late orders / orders in group (%)")
+    ax.set_ylabel("Late deliveries (% of orders)")
     ax.set_title("Late delivery rate by approval hour" if hourly else
                  "Late delivery rate by approval weekday")
+    figure.supxlabel("N = orders approved in each hour" if hourly else
+                     "N = orders approved on each weekday", fontsize=9)
     ax.set_ylim(0, max(np.nanmax(profile["late_rate_pct"].to_numpy(dtype=float)) *
                        (1.35 if hourly else 1.20), 1) if profile["orders"].sum() else 1)
     return figure
@@ -94,8 +96,10 @@ def plot_hour_weekday_heatmap(cells: pd.DataFrame) -> Figure:
     counts = cells.pivot(index="approval_weekday", columns="approval_hour", values="orders")
     figure, axes = plt.subplots(2, 1, figsize=(15, 8), layout="constrained")
     for ax, values, title, label, cmap in (
-        (axes[0], rate, "Late rate", "% late", "YlOrRd"),
-        (axes[1], counts.where(counts.gt(0)), "Order count", "Orders", "Blues"),
+        (axes[0], rate, "Late delivery rate by approval hour and weekday",
+         "Late deliveries (%)", "Greens"),
+        (axes[1], counts.where(counts.gt(0)), "Orders approved by hour and weekday",
+         "Orders", "Blues"),
     ):
         palette = plt.colormaps[cmap].with_extremes(bad="#eeeeee")
         image = ax.imshow(np.ma.masked_invalid(values.to_numpy(dtype=float)),
@@ -106,6 +110,7 @@ def plot_hour_weekday_heatmap(cells: pd.DataFrame) -> Figure:
         ax.set_ylabel("Approval weekday")
         ax.set_xlabel("Approval hour (recorded clock)")
         figure.colorbar(image, ax=ax, label=label)
+    figure.supxlabel("Grey cells have no orders. Rates use all orders in each cell.", fontsize=9)
     return figure
 
 
@@ -116,18 +121,23 @@ def plot_delay_distribution(orders: pd.DataFrame) -> Figure:
                for slot in SLOT_LABELS]
     figure, axes = plt.subplots(1, 2, figsize=(13, 5.6), layout="constrained")
     observed = [values for values in samples if len(values)]
+    titles = ("Days late across the full distribution", "Days late up to the pooled 99th percentile")
+    for ax, title in zip(axes, titles):
+        ax.set_title(title)
+        ax.set_xlabel("Approval time slot")
+        ax.set_ylabel("Calendar days past the promised date")
     if not observed:
         for ax in axes:
             ax.text(0.5, 0.5, "No late orders", ha="center", va="center", transform=ax.transAxes)
     else:
-        for ax, title in zip(axes, ("Full range", "Up to the 99th percentile")):
+        for ax in axes:
             ax.boxplot(samples, tick_labels=SLOT_LABELS, showmeans=True,
                        meanprops={"marker": "D", "markerfacecolor": LATE_COLOR,
                                   "markeredgecolor": LATE_COLOR})
-            ax.set_title(title)
-            ax.set_ylabel("Calendar days late among late orders")
             ax.tick_params(axis="x", rotation=25)
         p99 = float(np.percentile(np.concatenate(observed), 99))
-        axes[1].set_ylim(0, max(p99 * 1.05, 1))
+        axes[1].set_ylim(0, p99)
+        figure.supxlabel("Box line = median     Diamond = mean     Circles = values beyond the whiskers",
+                         fontsize=9)
     figure.suptitle("Delay duration by approval time slot (late orders only)")
     return figure
