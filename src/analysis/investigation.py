@@ -10,6 +10,71 @@ from .summary import summarize_delivery_by_slot
 ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
 
 
+def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
+                       routes: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Prepare the 12:00–18:00 order cohort with route and destination coverage.
+
+    A destination is known only when every item has the same nonblank customer
+    state. Missing or conflicting item states remain in the cohort for review.
+    """
+    required_items = {"order_id", "customer_state"}
+    required_orders = {"order_id", "approval_slot", "is_late"}
+    required_routes = {"order_id", "route_type", "items"}
+    for frame, required, label in ((items, required_items, "items"),
+                                    (orders, required_orders, "orders"),
+                                    (routes, required_routes, "routes")):
+        missing = required.difference(frame.columns)
+        if missing:
+            raise ValueError(f"Missing {label} columns: {sorted(missing)}")
+    if orders["order_id"].isna().any() or orders["order_id"].duplicated().any():
+        raise ValueError("Analysis orders must have unique, non-null order_id values.")
+
+    focus = orders.loc[orders["approval_slot"].eq(SLOT_LABELS[2])].copy()
+    selected = items.loc[items["order_id"].isin(focus["order_id"]),
+                         ["order_id", "customer_state"]].copy()
+    selected["customer_state"] = selected["customer_state"].astype("string").str.strip().replace("", pd.NA)
+    grouped = selected.groupby("order_id", sort=False, observed=True)["customer_state"]
+    destinations = grouped.agg(items="size", distinct_states="nunique",
+                               missing_items=lambda state: state.isna().sum(),
+                               customer_state="first")
+    destinations["location_status"] = np.select(
+        [destinations["distinct_states"].gt(1),
+         destinations["missing_items"].eq(destinations["items"]),
+         destinations["missing_items"].gt(0)],
+        ["conflicting", "missing", "incomplete"], default="known",
+    )
+    destinations["customer_state"] = destinations["customer_state"].where(
+        destinations["location_status"].eq("known"), pd.NA)
+    reviewed_ids = destinations.index[destinations["location_status"].ne("known")]
+    observed = (selected.loc[selected["order_id"].isin(reviewed_ids)]
+                .groupby("order_id", sort=False, observed=True)["customer_state"]
+                .agg(lambda states: ", ".join(sorted(states.dropna().unique()))))
+    destinations["observed_states"] = observed.reindex(destinations.index).fillna("")
+
+    focus = focus.merge(destinations.reset_index(), on="order_id", how="left", validate="one_to_one")
+    if focus["items"].isna().any():
+        raise ValueError("Some focus orders have no source items.")
+    focus = focus.merge(routes[["order_id", "route_type", "items"]], on="order_id",
+                        how="left", validate="one_to_one", suffixes=("", "_route"))
+    if focus["route_type"].isna().any() or focus["items_route"].isna().any():
+        raise ValueError("Some focus orders have no route classification.")
+    if not focus["items"].eq(focus["items_route"]).all():
+        raise ValueError("Route item counts differ from focus source items.")
+    focus.drop(columns=["items_route", "distinct_states", "missing_items", "observed_states"], inplace=True)
+
+    review = destinations.loc[reviewed_ids, ["location_status", "items", "distinct_states",
+                                              "missing_items", "observed_states"]].reset_index()
+    late_orders = int(focus["is_late"].sum())
+    summary = pd.DataFrame([{
+        "approval_slot": SLOT_LABELS[2], "orders": len(focus),
+        "on_time_orders": len(focus) - late_orders, "late_orders": late_orders,
+        "late_rate_pct": 100 * late_orders / len(focus) if len(focus) else np.nan,
+        "known_orders": int(focus["location_status"].eq("known").sum()),
+        "review_orders": len(review),
+    }])
+    return focus, {"summary": summary, "location_review": review}
+
+
 def classify_order_routes(items: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
     """Classify each analyzed order from every retained seller/customer state pair.
 

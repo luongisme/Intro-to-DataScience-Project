@@ -5,7 +5,7 @@ import pytest
 
 from src.analysis.investigation import (
     measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
-    investigate_delivery_stages,
+    investigate_delivery_stages, classify_order_routes, build_focus_cohort,
 )
 from src.analysis.orders import SLOT_LABELS
 
@@ -52,6 +52,73 @@ def sample_orders():
     # Purchase cohort and approval calendar month intentionally differ.
     frame.loc[0, "order_approved_at"] = pd.Timestamp("2017-02-01 10:00")
     return frame
+
+
+def focus_fixture():
+    orders = pd.DataFrame({
+        "order_id": ["known", "conflicting", "missing", "incomplete", "late", "outside"],
+        "approval_slot": pd.Categorical(
+            [SLOT_LABELS[2]] * 5 + [SLOT_LABELS[0]], categories=SLOT_LABELS, ordered=True),
+        "is_late": [False, True, False, False, True, True],
+        "approval_hour": [13, 14, 15, 16, 17, 2],
+    })
+    items = pd.DataFrame({
+        "order_id": ["known", "known", "conflicting", "conflicting", "missing", "missing",
+                     "incomplete", "incomplete", "late", "late", "outside"],
+        "customer_state": ["SP", "SP", "RJ", "MG", None, " ", "SP", " ", "SP", "SP", "RJ"],
+        "seller_state": ["SP"] * 11,
+    })
+    return items, orders, classify_order_routes(items, orders)
+
+
+def test_focus_cohort_keeps_outcomes_and_separates_destination_review():
+    items, orders, routes = focus_fixture()
+    before = [frame.copy(deep=True) for frame in (items, orders, routes)]
+
+    focus, diagnostics = build_focus_cohort(items, orders, routes)
+    by_id = focus.set_index("order_id")
+    review = diagnostics["location_review"].set_index("order_id")
+    summary = diagnostics["summary"].iloc[0]
+
+    assert len(focus) == 5
+    assert "outside" not in by_id.index
+    assert by_id["is_late"].sum() == 2
+    assert by_id.loc["known", "customer_state"] == "SP"
+    assert by_id.loc["known", "items"] == 2
+    assert by_id.loc["known", "route_type"] == "Intra-state"
+    assert by_id.loc["late", "approval_hour"] == 17
+    assert by_id.loc["conflicting", "location_status"] == "conflicting"
+    assert by_id.loc["missing", "location_status"] == "missing"
+    assert by_id.loc["incomplete", "location_status"] == "incomplete"
+    assert by_id.loc[["conflicting", "missing", "incomplete"], "customer_state"].isna().all()
+    assert review.loc["conflicting", "observed_states"] == "MG, RJ"
+    assert review.loc["missing", "missing_items"] == 2
+    assert review.loc["incomplete", "observed_states"] == "SP"
+    assert summary["orders"] == 5
+    assert summary["late_orders"] == 2
+    assert summary["known_orders"] == 2
+    assert summary["review_orders"] == 3
+    assert summary["late_rate_pct"] == pytest.approx(40)
+    for frame, original in zip((items, orders, routes), before):
+        pd.testing.assert_frame_equal(frame, original)
+
+
+def test_focus_cohort_rejects_missing_routes_and_source_items():
+    items, orders, routes = focus_fixture()
+    with pytest.raises(ValueError, match="no route classification"):
+        build_focus_cohort(items, orders, routes.loc[routes["order_id"].ne("late")])
+    with pytest.raises(ValueError, match="no source items"):
+        build_focus_cohort(items.loc[items["order_id"].ne("late")], orders, routes)
+
+
+def test_focus_cohort_handles_empty_slot():
+    items, orders, routes = focus_fixture()
+    orders = orders.loc[orders["order_id"].eq("outside")]
+    focus, diagnostics = build_focus_cohort(items, orders, routes)
+    assert focus.empty
+    assert diagnostics["location_review"].empty
+    assert diagnostics["summary"].iloc[0]["orders"] == 0
+    assert pd.isna(diagnostics["summary"].iloc[0]["late_rate_pct"])
 
 
 def test_periods_use_purchase_month_and_keep_empty_months_and_slots():
