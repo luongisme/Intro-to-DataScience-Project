@@ -8,6 +8,46 @@ from .summary import summarize_delivery_by_slot
 
 
 ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
+REVIEW_DESTINATION = "Requires review"
+
+
+def summarize_destination_states(focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Count destination outcomes for all focus orders and the inter-state subset.
+
+    Late rate uses each destination's orders. Late share uses all late orders
+    in the selected scope, including orders whose destination needs review.
+    """
+    required = {"order_id", "customer_state", "location_status", "route_type", "is_late"}
+    missing = required.difference(focus.columns)
+    if missing:
+        raise ValueError(f"Missing focus columns: {sorted(missing)}")
+    if focus["order_id"].isna().any() or not focus["order_id"].is_unique:
+        raise ValueError("Destination profiles require one row per non-null order_id.")
+    if focus["is_late"].isna().any() or not focus["is_late"].isin([False, True]).all():
+        raise ValueError("Delivery outcome must be known for every focus order.")
+    if not focus["location_status"].isin(["known", "missing", "incomplete", "conflicting"]).all():
+        raise ValueError("Focus orders contain an unrecognized location status.")
+    if not focus["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Focus orders contain an unrecognized route classification.")
+    state = focus["customer_state"].astype("string")
+    known = focus["location_status"].eq("known")
+    if (known & (state.isna() | state.str.strip().eq(""))).any():
+        raise ValueError("Known destinations must have a nonblank customer state.")
+    view = focus[["customer_state", "route_type", "is_late"]].copy()
+    view["customer_state"] = state.where(known, REVIEW_DESTINATION)
+    profiles = {}
+    for name, selected in (("all_routes", view),
+                           ("inter_state", view.loc[view["route_type"].eq("Inter-state")])):
+        table = selected.groupby("customer_state", observed=True).agg(
+            orders=("is_late", "size"), late_orders=("is_late", "sum"),
+        ).reset_index()
+        table["late_rate_pct"] = 100 * table["late_orders"] / table["orders"]
+        total_late = int(selected["is_late"].sum())
+        table["late_share_pct"] = 100 * table["late_orders"] / total_late if total_late else np.nan
+        profiles[name] = table.sort_values(
+            ["late_orders", "orders", "customer_state"], ascending=[False, False, True],
+        ).reset_index(drop=True)
+    return profiles
 
 
 def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,

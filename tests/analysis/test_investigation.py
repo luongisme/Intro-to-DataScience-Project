@@ -6,6 +6,7 @@ import pytest
 from src.analysis.investigation import (
     measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
     investigate_delivery_stages, classify_order_routes, build_focus_cohort,
+    summarize_destination_states, REVIEW_DESTINATION,
 )
 from src.analysis.orders import SLOT_LABELS
 
@@ -119,6 +120,75 @@ def test_focus_cohort_handles_empty_slot():
     assert diagnostics["location_review"].empty
     assert diagnostics["summary"].iloc[0]["orders"] == 0
     assert pd.isna(diagnostics["summary"].iloc[0]["late_rate_pct"])
+
+
+def test_destination_profiles_reconcile_review_orders_and_scope_denominators():
+    focus = pd.DataFrame({
+        "order_id": list("ABCDEFG"),
+        "customer_state": ["SP", "SP", "RJ", "RJ", None, None, "MG"],
+        "location_status": ["known"] * 4 + ["missing", "conflicting", "known"],
+        "route_type": ["Intra-state", "Inter-state", "Inter-state", "Inter-state",
+                       "Unknown", "Inter-state", "Mixed"],
+        "is_late": [True, False, True, False, True, True, False],
+    })
+    before = focus.copy(deep=True)
+    profiles = summarize_destination_states(focus)
+    for name, expected_orders, expected_late in (("all_routes", 7, 4), ("inter_state", 4, 2)):
+        table = profiles[name]
+        assert table["orders"].sum() == expected_orders
+        assert table["late_orders"].sum() == expected_late
+        assert table["late_share_pct"].sum() == pytest.approx(100)
+    all_routes = profiles["all_routes"].set_index("customer_state")
+    inter = profiles["inter_state"].set_index("customer_state")
+    assert all_routes.loc["RJ", "late_rate_pct"] == pytest.approx(50)
+    assert all_routes.loc["RJ", "late_share_pct"] == pytest.approx(25)
+    assert inter.loc["RJ", "late_share_pct"] == pytest.approx(50)
+    assert all_routes.loc[REVIEW_DESTINATION, "orders"] == 2
+    assert inter.loc[REVIEW_DESTINATION, "orders"] == 1
+    assert profiles["inter_state"]["customer_state"].tolist() == ["RJ", REVIEW_DESTINATION, "SP"]
+    pd.testing.assert_frame_equal(focus, before)
+    shuffled = summarize_destination_states(focus.sample(frac=1, random_state=17))
+    for name in profiles:
+        pd.testing.assert_frame_equal(profiles[name], shuffled[name])
+
+
+def test_destination_profiles_handle_empty_scope_and_no_late_orders():
+    items, orders, routes = focus_fixture()
+    focus, _ = build_focus_cohort(items, orders, routes)
+    focus["is_late"] = False
+    profiles = summarize_destination_states(focus)
+    assert profiles["all_routes"]["late_share_pct"].isna().all()
+    assert profiles["all_routes"]["late_rate_pct"].eq(0).all()
+    focus["route_type"] = "Intra-state"
+    assert summarize_destination_states(focus)["inter_state"].empty
+    assert all(table.empty for table in summarize_destination_states(focus.iloc[:0]).values())
+    with pytest.raises(ValueError, match="one row"):
+        summarize_destination_states(pd.concat([focus, focus.iloc[[0]]]))
+
+
+def test_destination_figure_ranks_known_states_and_renders_empty_results():
+    import matplotlib.pyplot as plt
+    from src.analysis.investigation_plots import plot_destination_states
+
+    table = pd.DataFrame({
+        "customer_state": ["SP", REVIEW_DESTINATION, "RJ"],
+        "orders": [100, 100, 20], "late_orders": [2, 99, 3],
+        "late_rate_pct": [2., 99., 15.],
+    })
+    before = table.copy(deep=True)
+    figure = plot_destination_states(table, top_n=1)
+    try:
+        figure.canvas.draw()
+        assert [label.get_text() for label in figure.axes[0].get_yticklabels()] == ["RJ (N=20)"]
+        assert figure.axes[0].patches[0].get_width() == 3
+        assert figure.axes[1].patches[0].get_width() == 15
+    finally:
+        plt.close(figure)
+    for empty in (table.iloc[:0], table.assign(late_orders=0)):
+        figure = plot_destination_states(empty)
+        figure.canvas.draw()
+        plt.close(figure)
+    pd.testing.assert_frame_equal(table, before)
 
 
 def test_periods_use_purchase_month_and_keep_empty_months_and_slots():
