@@ -10,6 +10,48 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_state_pairs(pairs, inter_late_rate, top_n=5):
+    """Plot leading seller-to-customer state pairs by late inter-state orders."""
+    if top_n < 1:
+        raise ValueError("top_n must be positive.")
+    rows = pairs.loc[pairs["late_orders"].gt(0)].sort_values(
+        ["late_orders", "orders", "seller_state", "customer_state"],
+        ascending=[False, False, True, True],
+    ).head(top_n)
+    figure, axes = plt.subplots(1, 2, figsize=(12, 5.8), sharey=True, layout="constrained")
+    figure.suptitle("Leading seller → customer state pairs | Inter-state orders approved 12:00–18:00")
+    if rows.empty:
+        for ax in axes:
+            ax.text(0.5, 0.5, "No late orders in eligible state pairs", transform=ax.transAxes,
+                    ha="center", va="center")
+            ax.set_axis_off()
+        return figure
+    y = np.arange(len(rows))
+    for ax, column, color, title, xlabel in zip(
+        axes, ("late_orders", "late_rate_pct"), ("#377eb8", "#388443"),
+        ("Late order counts", "Late delivery rates"),
+        ("Late orders", "Late orders / pair orders (%)"),
+    ):
+        values = rows[column].to_numpy(dtype=float)
+        ax.barh(y, values, color=color)
+        for position, value in enumerate(values):
+            label = f"{value:,.0f}" if column == "late_orders" else f"{value:.2f}%"
+            ax.annotate(label, (value, position), xytext=(5, 0), textcoords="offset points", va="center")
+        ax.set_xlim(0, max(values) * 1.3)
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+    if np.isfinite(inter_late_rate):
+        axes[1].axvline(inter_late_rate, color="#555555", linestyle="--", linewidth=1.2,
+                        label=f"All inter-state orders: {inter_late_rate:.2f}%")
+        axes[1].legend(frameon=False, loc="lower right", fontsize=8)
+    axes[0].set_yticks(y, [f"{row.seller_state} → {row.customer_state} (N={int(row.orders):,})"
+                           for row in rows.itertuples()])
+    axes[0].invert_yaxis()
+    figure.supxlabel("Ranked by late order count. N = all orders in each state pair.\n"
+                     "The reference rate includes these pairs and all other inter-state orders.", fontsize=9)
+    return figure
+
+
 def plot_destination_states(inter_state, top_n=5):
     """Plot the leading known destinations by late count in the focus inter-state cohort."""
     if top_n < 1:

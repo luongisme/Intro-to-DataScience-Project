@@ -6,7 +6,7 @@ import pytest
 from src.analysis.investigation import (
     measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
     investigate_delivery_stages, classify_order_routes, build_focus_cohort,
-    summarize_destination_states, REVIEW_DESTINATION,
+    summarize_destination_states, summarize_state_pairs, REVIEW_DESTINATION,
 )
 from src.analysis.orders import SLOT_LABELS
 
@@ -189,6 +189,76 @@ def test_destination_figure_ranks_known_states_and_renders_empty_results():
         figure.canvas.draw()
         plt.close(figure)
     pd.testing.assert_frame_equal(table, before)
+
+
+def test_state_pairs_count_each_order_once_and_keep_unresolved_groups():
+    focus = pd.DataFrame({
+        "order_id": ["single", "multi", "missing", "customer_review", "second", "outside"],
+        "customer_state": ["RJ", "RJ", "RJ", pd.NA, "SP", "SP"],
+        "location_status": ["known", "known", "known", "conflicting", "known", "known"],
+        "route_type": ["Inter-state"] * 5 + ["Intra-state"],
+        "is_late": [True, True, True, True, False, True],
+    })
+    items = pd.DataFrame({
+        "order_id": ["single", "single", "multi", "multi", "missing", "missing",
+                     "customer_review", "second", "outside"],
+        "seller_state": ["SP", "SP", "SP", "MG", "SP", None, "SP", "RJ", "SP"],
+    })
+    original = [frame.copy(deep=True) for frame in (items, focus)]
+    result = summarize_state_pairs(items, focus)
+    coverage = result["coverage"].set_index("seller_group")
+    pairs = result["pairs"].set_index(["seller_state", "customer_state"])
+    assert coverage["orders"].to_dict() == {
+        "Single seller state": 2, "Multiple seller states": 1, REVIEW_DESTINATION: 2,
+    }
+    assert coverage["late_orders"].sum() == 4
+    assert len(result["orders"]) == 5
+    assert pairs.loc[("SP", "RJ"), "orders"] == 1
+    assert pairs.loc[("SP", "RJ"), "late_rate_pct"] == 100
+    assert pairs.loc[("SP", "RJ"), "late_share_pct"] == 25
+    assert result["orders"].set_index("order_id").loc["multi", "seller_group"] == "Multiple seller states"
+    assert pd.isna(result["orders"].set_index("order_id").loc["multi", "seller_state"])
+    shuffled = summarize_state_pairs(items.sample(frac=1, random_state=17), focus)
+    pd.testing.assert_frame_equal(result["pairs"], shuffled["pairs"])
+    for frame, before in zip((items, focus), original):
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_state_pairs_handle_empty_and_zero_late_cohorts():
+    focus = pd.DataFrame({
+        "order_id": ["A"], "customer_state": ["RJ"], "location_status": ["known"],
+        "route_type": ["Inter-state"], "is_late": [False],
+    })
+    items = pd.DataFrame({"order_id": ["A"], "seller_state": ["SP"]})
+    result = summarize_state_pairs(items, focus)
+    assert result["pairs"]["late_share_pct"].isna().all()
+    assert result["coverage"]["orders"].sum() == 1
+    empty = summarize_state_pairs(items, focus.iloc[:0])
+    assert empty["pairs"].empty
+    assert empty["coverage"]["orders"].sum() == 0
+    with pytest.raises(ValueError, match="no source items"):
+        summarize_state_pairs(items.iloc[:0], focus)
+
+
+def test_state_pair_figure_uses_count_ranking_and_handles_empty_results():
+    import matplotlib.pyplot as plt
+    from src.analysis.investigation_plots import plot_state_pairs
+
+    pairs = pd.DataFrame({
+        "seller_state": ["SP", "MG"], "customer_state": ["RJ", "BA"],
+        "orders": [100, 10], "late_orders": [5, 3], "late_rate_pct": [5.0, 30.0],
+    })
+    figure = plot_state_pairs(pairs, 8.0, top_n=1)
+    try:
+        figure.canvas.draw()
+        assert [label.get_text() for label in figure.axes[0].get_yticklabels()] == ["SP → RJ (N=100)"]
+        assert figure.axes[0].patches[0].get_width() == 5
+        assert figure.axes[1].patches[0].get_width() == 5
+    finally:
+        plt.close(figure)
+    figure = plot_state_pairs(pairs.iloc[:0], float("nan"))
+    figure.canvas.draw()
+    plt.close(figure)
 
 
 def test_periods_use_purchase_month_and_keep_empty_months_and_slots():

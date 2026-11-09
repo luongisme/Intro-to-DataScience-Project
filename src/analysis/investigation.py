@@ -11,6 +11,58 @@ ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
 REVIEW_DESTINATION = "Requires review"
 
 
+def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Count inter-state orders by seller and customer state without splitting orders."""
+    required_items = {"order_id", "seller_state"}
+    required_focus = {"order_id", "customer_state", "location_status", "route_type", "is_late"}
+    for frame, required, label in ((items, required_items, "items"),
+                                    (focus, required_focus, "focus")):
+        missing = required.difference(frame.columns)
+        if missing:
+            raise ValueError(f"Missing {label} columns: {sorted(missing)}")
+    if focus["order_id"].isna().any() or not focus["order_id"].is_unique:
+        raise ValueError("State pairs require one row per non-null focus order.")
+    inter = focus.loc[focus["route_type"].eq("Inter-state")].copy()
+    selected = items.loc[items["order_id"].isin(inter["order_id"]),
+                         ["order_id", "seller_state"]].copy()
+    selected["seller_state"] = selected["seller_state"].astype("string").str.strip().replace("", pd.NA)
+    grouped = selected.groupby("order_id", sort=False, observed=True)["seller_state"].agg(
+        seller_state_count="nunique", missing_seller_items=lambda states: states.isna().sum(),
+        seller_state="first",
+    ).reset_index()
+    inter = inter.merge(grouped, on="order_id", how="left", validate="one_to_one")
+    if inter["seller_state_count"].isna().any():
+        raise ValueError("Some inter-state orders have no source items.")
+    known_customer = (inter["location_status"].eq("known")
+                      & inter["customer_state"].astype("string").str.strip().ne("").fillna(False))
+    complete_seller = inter["missing_seller_items"].eq(0)
+    single = known_customer & complete_seller & inter["seller_state_count"].eq(1)
+    multiple = known_customer & complete_seller & inter["seller_state_count"].gt(1)
+    inter["seller_group"] = np.select(
+        [single, multiple], ["Single seller state", "Multiple seller states"],
+        default=REVIEW_DESTINATION,
+    )
+    inter["seller_state"] = inter["seller_state"].where(single, pd.NA)
+
+    labels = ["Single seller state", "Multiple seller states", REVIEW_DESTINATION]
+    coverage = inter.groupby("seller_group", observed=True).agg(
+        orders=("order_id", "size"), late_orders=("is_late", "sum"),
+    ).reindex(labels, fill_value=0).rename_axis("seller_group").reset_index()
+    coverage["late_rate_pct"] = (100 * coverage["late_orders"] /
+                                 coverage["orders"].replace(0, np.nan))
+    pairs = inter.loc[single].groupby(["seller_state", "customer_state"], observed=True).agg(
+        orders=("order_id", "size"), late_orders=("is_late", "sum"),
+    ).reset_index()
+    pairs["late_rate_pct"] = 100 * pairs["late_orders"] / pairs["orders"]
+    total_late = int(inter["is_late"].sum())
+    pairs["late_share_pct"] = 100 * pairs["late_orders"] / total_late if total_late else np.nan
+    pairs = pairs.sort_values(
+        ["late_orders", "orders", "seller_state", "customer_state"],
+        ascending=[False, False, True, True],
+    ).reset_index(drop=True)
+    return {"orders": inter, "coverage": coverage, "pairs": pairs}
+
+
 def summarize_destination_states(focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Count destination outcomes for all focus orders and the inter-state subset.
 
