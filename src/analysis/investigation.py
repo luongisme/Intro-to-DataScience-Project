@@ -141,7 +141,10 @@ def summarize_time_periods(orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
 
 
 def compare_cleaning_cohorts(merged: pd.DataFrame, orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Compare delivered orders with known label inputs against the clean cohort."""
+    """Compare slots only if the clean cohort is a matching subset of eligible source orders.
+
+    On a mismatch, coverage counts the affected clean orders and slots is empty.
+    """
     fields = ["order_status", "order_approved_at", "order_delivered_customer_date",
               "order_estimated_delivery_date"]
     distinct = merged.groupby("order_id")[fields].nunique(dropna=False)
@@ -149,22 +152,36 @@ def compare_cleaning_cohorts(merged: pd.DataFrame, orders: pd.DataFrame) -> dict
     source = merged.loc[~merged["order_id"].isin(conflicts), ["order_id", *fields]].drop_duplicates("order_id").copy()
     delivered = source.loc[source["order_status"].eq("delivered")].copy()
     comparable = delivered.dropna(subset=fields[1:]).copy()
+    clean_fields = orders.set_index("order_id")[fields]
+    if not clean_fields.index.is_unique:
+        raise ValueError("Clean cohort comparisons require one row per order_id.")
+    before_fields = comparable.set_index("order_id")[fields]
+    shared_ids = clean_fields.index.intersection(before_fields.index)
+    missing_orders = len(clean_fields) - len(shared_ids)
+    matches = clean_fields.loc[shared_ids].eq(before_fields.loc[shared_ids]).fillna(False)
+    changed_orders = int((~matches.all(axis=1)).sum())
     comparable["approval_slot"] = pd.Categorical.from_codes(
         comparable["order_approved_at"].dt.hour // 6, categories=SLOT_LABELS, ordered=True)
     days = (comparable["order_delivered_customer_date"].dt.normalize() -
             comparable["order_estimated_delivery_date"].dt.normalize()).dt.days
     comparable["is_late"] = days.gt(0)
     comparable["delay_days"] = days.where(days.gt(0)).astype("Int64")
-    tables = [summarize_delivery_by_slot(comparable).assign(cohort="Before cleaning"),
-              summarize_delivery_by_slot(orders).assign(cohort="After cleaning")]
     coverage = pd.DataFrame([
         ["Orders with conflicting comparison fields", len(conflicts)],
         ["Delivered orders with consistent comparison fields", len(delivered)],
         ["Delivered orders missing comparison timestamps", len(delivered) - len(comparable)],
         ["Comparable delivered orders before cleaning", len(comparable)],
         ["Analyzable orders after cleaning", len(orders)],
+        ["Clean orders absent from the comparable source", missing_orders],
+        ["Matched orders with different comparison fields", changed_orders],
     ], columns=["measure", "orders"])
-    return {"coverage": coverage, "slots": pd.concat(tables, ignore_index=True)}
+    if missing_orders or changed_orders:
+        slots = summarize_delivery_by_slot(orders.iloc[:0]).iloc[:0].assign(cohort="").copy()
+    else:
+        slots = pd.concat([summarize_delivery_by_slot(comparable).assign(cohort="Before cleaning"),
+                           summarize_delivery_by_slot(orders).assign(cohort="After cleaning")],
+                          ignore_index=True)
+    return {"coverage": coverage, "slots": slots}
 
 
 def measure_stage_hours(start: pd.Series, end: pd.Series) -> pd.DataFrame:

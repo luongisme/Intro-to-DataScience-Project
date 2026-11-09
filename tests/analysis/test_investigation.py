@@ -69,12 +69,40 @@ def test_cohort_comparison_counts_missing_and_conflicted_orders_without_dropping
     merged.loc[2, "order_approved_at"] = pd.NaT
     merged.loc[3, "order_approved_at"] = pd.Timestamp("2017-02-01 11:00")
     before = merged.copy(deep=True)
-    result = compare_cleaning_cohorts(merged, orders)
+    retained = orders.loc[orders["order_id"].eq("B")].copy()
+    retained["is_late"] = False
+    retained.loc[:, "delay_days"] = pd.NA
+    result = compare_cleaning_cohorts(merged, retained)
     counts = result["coverage"].set_index("measure")["orders"]
     assert counts["Orders with conflicting comparison fields"] == 1
     assert counts["Delivered orders missing comparison timestamps"] == 1
     assert counts["Comparable delivered orders before cleaning"] == 1
+    assert result["slots"].groupby("cohort")["orders"].sum().to_dict() == {
+        "Before cleaning": 1, "After cleaning": 1,
+    }
     pd.testing.assert_frame_equal(merged, before)
+
+
+def test_disjoint_order_ids_cannot_be_compared_even_if_counts_match():
+    source = sample_orders()
+    clean = source.assign(order_id=["X", "Y", "Z"])
+    result = compare_cleaning_cohorts(source, clean)
+    coverage = result["coverage"].set_index("measure")["orders"]
+    assert coverage["Clean orders absent from the comparable source"] == 3
+    assert result["slots"].empty
+
+
+@pytest.mark.parametrize("field", ["order_approved_at", "order_delivered_customer_date",
+                                    "order_estimated_delivery_date", "order_status"])
+def test_changed_comparison_fields_are_counted_by_order(field):
+    source = sample_orders()
+    clean = source.iloc[::-1].copy()
+    clean.loc[0, field] = "canceled" if field == "order_status" else pd.NaT
+    result = compare_cleaning_cohorts(source, clean)
+    coverage = result["coverage"].set_index("measure")["orders"]
+    assert coverage["Matched orders with different comparison fields"] == 1
+    assert coverage["Clean orders absent from the comparable source"] == 0
+    assert result["slots"].empty
 
 
 def test_stage_summaries_preserve_orders_and_report_invalid_endpoints():
