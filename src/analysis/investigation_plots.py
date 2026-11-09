@@ -6,6 +6,58 @@ import numpy as np
 from .orders import SLOT_LABELS
 
 
+def plot_route_slot_rates(slots):
+    """Compare intra/inter late rates with each cell's order denominator."""
+    figure, ax = plt.subplots(figsize=(12, 5.8), layout="constrained")
+    for position, (route, color) in enumerate((("Intra-state", "#377eb8"),
+                                                ("Inter-state", "#e76f51"))):
+        rows = slots.loc[slots["route_type"].eq(route)].set_index("approval_slot").reindex(SLOT_LABELS)
+        x = np.arange(len(SLOT_LABELS)) + (position - 0.5) * 0.36
+        values = rows["late_rate_pct"].to_numpy(dtype=float, na_value=np.nan)
+        ax.bar(x, values, width=0.36, label=route, color=color)
+        for i, row in enumerate(rows.itertuples()):
+            if int(row.orders) > 0 and np.isfinite(values[i]):
+                ax.annotate(f"N={int(row.orders):,}", (x[i], values[i]),
+                            xytext=(0, 4), textcoords="offset points", ha="center", fontsize=8)
+            else:
+                ax.annotate("N=0", (x[i], 0), xytext=(0, 4),
+                            textcoords="offset points", ha="center", fontsize=8)
+    ax.set_xticks(range(len(SLOT_LABELS)), SLOT_LABELS)
+    ax.set_xlabel("Approval time slot")
+    ax.set_ylabel("Late orders / route-slot orders (%)")
+    ax.set_title("Late delivery rate by route type and approval slot")
+    ax.margins(y=0.18)
+    ax.legend(frameon=False)
+    return figure
+
+
+def plot_route_transit_time(transit):
+    """Compare median carrier-to-customer hours for known single-route groups."""
+    figure, axes = plt.subplots(1, 2, figsize=(12, 5.4), layout="constrained")
+    routes = ("Intra-state", "Inter-state")
+    rows = transit.set_index("route_type").reindex(routes)
+    colors = ("#377eb8", "#e76f51")
+    for ax, column, title in zip(
+        axes, ("median_calendar_hours", "median_eligible_hours"),
+        ("Recorded elapsed hours", "Eligible-day hours"),
+    ):
+        values = rows[column].to_numpy(dtype=float, na_value=np.nan)
+        ax.bar(routes, values, color=colors, width=0.55)
+        for i, row in enumerate(rows.itertuples()):
+            count = int(row.evaluated)
+            if count and np.isfinite(values[i]):
+                ax.annotate(f"N={count:,}", (i, values[i]), xytext=(0, 4),
+                            textcoords="offset points", ha="center", fontsize=8)
+            else:
+                ax.annotate("N=0", (i, 0), xytext=(0, 4),
+                            textcoords="offset points", ha="center", fontsize=8)
+        ax.set_title(title)
+        ax.set_ylabel("Median hours per evaluated order")
+        ax.margins(y=0.18)
+    figure.suptitle("Carrier handoff to customer delivery by route type")
+    return figure
+
+
 def plot_monthly_slot_rates(monthly):
     """Pair monthly rates with counts, including empty calendar months."""
     figure, axes = plt.subplots(3, 1, figsize=(13, 9.5), sharex=True, layout="constrained")

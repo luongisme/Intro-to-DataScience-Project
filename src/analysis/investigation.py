@@ -7,6 +7,122 @@ from .orders import SLOT_LABELS
 from .summary import summarize_delivery_by_slot
 
 
+ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
+
+
+def classify_order_routes(items: pd.DataFrame, orders: pd.DataFrame) -> pd.DataFrame:
+    """Classify each analyzed order from every retained seller/customer state pair.
+
+    A missing or blank state on any item makes the whole route unknown. Items
+    belonging to reviewed orders are outside the analyzed order cohort.
+    """
+    required_items = {"order_id", "customer_state", "seller_state"}
+    missing_items = required_items.difference(items.columns)
+    if missing_items:
+        raise ValueError(f"Missing item route columns: {sorted(missing_items)}")
+    if "order_id" not in orders:
+        raise ValueError("Missing order_id in analysis orders.")
+    if orders["order_id"].isna().any() or orders["order_id"].duplicated().any():
+        raise ValueError("Analysis orders must have unique, non-null order_id values.")
+
+    selected = items.loc[items["order_id"].isin(orders["order_id"]),
+                         ["order_id", "customer_state", "seller_state"]].copy()
+    if selected["order_id"].isna().any():
+        raise ValueError("Selected items must have non-null order_id values.")
+    known = (selected["customer_state"].notna() & selected["seller_state"].notna()
+             & selected["customer_state"].astype("string").str.strip().ne("").fillna(False)
+             & selected["seller_state"].astype("string").str.strip().ne("").fillna(False))
+    selected["unknown"] = ~known
+    selected["intra"] = known & selected["customer_state"].eq(selected["seller_state"]).fillna(False)
+    selected["inter"] = known & ~selected["customer_state"].eq(selected["seller_state"]).fillna(False)
+    grouped = selected.groupby("order_id", sort=False, observed=True).agg(
+        items=("order_id", "size"), unknown=("unknown", "any"),
+        intra=("intra", "any"), inter=("inter", "any"),
+    )
+    missing_ids = orders.loc[~orders["order_id"].isin(grouped.index), "order_id"]
+    if not missing_ids.empty:
+        raise ValueError(f"No item route for {len(missing_ids)} analysis orders.")
+    grouped["route_type"] = np.select(
+        [grouped["unknown"], grouped["intra"] & grouped["inter"], grouped["intra"], grouped["inter"]],
+        ["Unknown", "Mixed", "Intra-state", "Inter-state"], default="Unknown",
+    )
+    routes = grouped.reset_index()[["order_id", "route_type", "items"]]
+    routes["route_type"] = pd.Categorical(routes["route_type"], categories=ROUTE_LABELS, ordered=True)
+    return routes
+
+
+def summarize_routes(orders: pd.DataFrame, routes: pd.DataFrame,
+                     stage_records: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Count delivery outcomes by route and approval slot; summarize transit.
+
+    Empty groups retain zero counts and undefined rates or durations. Transit
+    statistics include only valid carrier-to-customer intervals.
+    """
+    required_orders = {"order_id", "approval_slot", "is_late"}
+    required_routes = {"order_id", "route_type"}
+    required_stages = {"order_id", "stage", "status", "calendar_hours", "eligible_hours"}
+    for frame, required, label in ((orders, required_orders, "orders"),
+                                    (routes, required_routes, "routes"),
+                                    (stage_records, required_stages, "stage records")):
+        missing = required.difference(frame.columns)
+        if missing:
+            raise ValueError(f"Missing {label} columns: {sorted(missing)}")
+    if orders["order_id"].isna().any() or orders["order_id"].duplicated().any():
+        raise ValueError("Analysis orders must have unique, non-null order_id values.")
+    if routes["order_id"].isna().any() or routes["order_id"].duplicated().any():
+        raise ValueError("Routes must have unique, non-null order_id values.")
+    if set(routes["order_id"]) != set(orders["order_id"]):
+        raise ValueError("Route order IDs must match analysis order IDs exactly.")
+    if routes["route_type"].isna().any() or not routes["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Routes contain an unrecognized classification.")
+    if orders["approval_slot"].isna().any() or not orders["approval_slot"].isin(SLOT_LABELS).all():
+        raise ValueError("Orders contain an unrecognized approval slot.")
+    if orders["is_late"].isna().any():
+        raise ValueError("Delivery outcome must be known for every analysis order.")
+
+    view = orders[["order_id", "approval_slot", "is_late"]].merge(
+        routes[["order_id", "route_type"]], on="order_id", validate="one_to_one")
+    view["route_type"] = pd.Categorical(view["route_type"], categories=ROUTE_LABELS, ordered=True)
+    view["approval_slot"] = pd.Categorical(view["approval_slot"], categories=SLOT_LABELS, ordered=True)
+    cell_index = pd.MultiIndex.from_product(
+        [ROUTE_LABELS, SLOT_LABELS], names=["route_type", "approval_slot"])
+    slots = view.groupby(["route_type", "approval_slot"], observed=True).agg(
+        orders=("order_id", "size"), late_orders=("is_late", "sum"),
+    ).reindex(cell_index, fill_value=0).reset_index()
+    slots["orders"] = slots["orders"].astype("int64")
+    slots["late_orders"] = slots["late_orders"].astype("int64")
+    slots["on_time_orders"] = slots["orders"] - slots["late_orders"]
+    slots["late_rate_pct"] = slots["late_orders"].div(slots["orders"].replace(0, np.nan)).mul(100)
+
+    totals = slots.groupby("route_type", observed=True).agg(
+        orders=("orders", "sum"), on_time_orders=("on_time_orders", "sum"),
+        late_orders=("late_orders", "sum"),
+    ).reindex(ROUTE_LABELS, fill_value=0).reset_index()
+    totals["late_rate_pct"] = totals["late_orders"].div(totals["orders"].replace(0, np.nan)).mul(100)
+
+    transit = stage_records.loc[stage_records["stage"].eq("Carrier transit")].copy()
+    if transit["order_id"].isna().any() or transit["order_id"].duplicated().any():
+        raise ValueError("Carrier transit must have one record per analysis order.")
+    if set(transit["order_id"]) != set(orders["order_id"]):
+        raise ValueError("Carrier transit order IDs must match analysis order IDs exactly.")
+    transit = transit.merge(routes[["order_id", "route_type"]], on="order_id", validate="one_to_one")
+    transit["route_type"] = pd.Categorical(transit["route_type"], categories=ROUTE_LABELS, ordered=True)
+    valid = transit["status"].eq("valid")
+    if transit.loc[valid, ["calendar_hours", "eligible_hours"]].isna().any().any():
+        raise ValueError("Valid carrier transit records must have both durations.")
+    if transit.loc[~valid, ["calendar_hours", "eligible_hours"]].notna().any().any():
+        raise ValueError("Invalid carrier transit records must not have durations.")
+    transit.loc[~valid, ["calendar_hours", "eligible_hours"]] = np.nan
+    duration = transit.groupby("route_type", observed=True).agg(
+        orders=("order_id", "size"), evaluated=("calendar_hours", "count"),
+        mean_calendar_hours=("calendar_hours", "mean"), median_calendar_hours=("calendar_hours", "median"),
+        mean_eligible_hours=("eligible_hours", "mean"), median_eligible_hours=("eligible_hours", "median"),
+    ).reindex(ROUTE_LABELS).reset_index()
+    duration[["orders", "evaluated"]] = duration[["orders", "evaluated"]].fillna(0).astype("int64")
+    duration["unavailable"] = duration["orders"] - duration["evaluated"]
+    return {"routes": routes, "totals": totals, "slots": slots, "transit": duration}
+
+
 def summarize_time_periods(orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Use purchase months for cohorts and approval times for slot assignment."""
     monthly = []
