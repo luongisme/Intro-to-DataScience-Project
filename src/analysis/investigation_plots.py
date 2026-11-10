@@ -111,6 +111,7 @@ def plot_state_pairs(pairs, inter_late_rate, top_n=5):
         ax.set_title(title)
         ax.set_xlabel(xlabel)
     if np.isfinite(inter_late_rate):
+        axes[1].set_xlim(0, max(rows["late_rate_pct"].max(), inter_late_rate) * 1.3)
         axes[1].axvline(inter_late_rate, color="#555555", linestyle="--", linewidth=1.2,
                         label=f"All inter-state orders: {inter_late_rate:.2f}%")
         axes[1].legend(frameon=False, loc="lower right", fontsize=8)
