@@ -261,6 +261,8 @@ def classify_order_routes(items: pd.DataFrame, orders: pd.DataFrame) -> pd.DataF
                          ["order_id", "customer_state", "seller_state"]].copy()
     if selected["order_id"].isna().any():
         raise ValueError("Selected items must have non-null order_id values.")
+    for column in ("customer_state", "seller_state"):
+        selected[column] = selected[column].astype("string").str.strip()
     known = (selected["customer_state"].notna() & selected["seller_state"].notna()
              & selected["customer_state"].astype("string").str.strip().ne("").fillna(False)
              & selected["seller_state"].astype("string").str.strip().ne("").fillna(False))
