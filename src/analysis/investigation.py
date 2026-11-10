@@ -11,6 +11,68 @@ ROUTE_LABELS = ("Intra-state", "Inter-state", "Mixed", "Unknown")
 REVIEW_DESTINATION = "Requires review"
 
 
+def summarize_focus_comparisons(inter: pd.DataFrame, leading_pair: tuple[str, str] | None) -> dict[str, pd.DataFrame]:
+    """Provide evidence tables for route composition and observed period comparisons.
+
+    The purchase periods were selected after inspecting the historical monthly
+    profiles. The remaining inter-state cohort excludes the selected pair.
+    """
+    required = {"order_id", "seller_group", "seller_state", "customer_state", "route_type",
+                "is_late", "order_purchase_timestamp"}
+    missing = required.difference(inter.columns)
+    if missing:
+        raise ValueError(f"Missing focus comparison columns: {sorted(missing)}")
+    if inter["order_id"].isna().any() or not inter["order_id"].is_unique:
+        raise ValueError("Focus comparisons require one row per non-null order_id.")
+    if not inter["route_type"].eq("Inter-state").fillna(False).all():
+        raise ValueError("Focus comparison input must contain only inter-state orders.")
+    if inter["order_purchase_timestamp"].isna().any() or inter["is_late"].isna().any():
+        raise ValueError("Purchase time and delivery outcome must be complete.")
+    if not inter["is_late"].isin([False, True]).all():
+        raise ValueError("Delivery outcome is_late must contain only booleans or numeric 0/1 values.")
+    columns = ["scope", "orders", "late_orders", "late_rate_pct"]
+    result = {"same_destination": pd.DataFrame(columns=columns),
+              "periods": pd.DataFrame(columns=["purchase_period", *columns]),
+              "concentration": pd.DataFrame(columns=[*columns, "order_share_pct", "late_share_pct"])}
+    if leading_pair is None:
+        return result
+    seller, customer = leading_pair
+    selected = (inter["seller_group"].eq("Single seller state")
+                & inter["seller_state"].eq(seller).fillna(False)
+                & inter["customer_state"].eq(customer).fillna(False))
+    pair = inter.loc[selected]
+    remaining = inter.loc[~selected]
+    if pair.empty:
+        raise ValueError("The selected state pair has no eligible orders.")
+
+    def describe(frame, scope):
+        late_orders = int(frame["is_late"].sum())
+        return {"scope": scope, "orders": len(frame), "late_orders": late_orders,
+                "late_rate_pct": 100 * late_orders / len(frame) if len(frame) else np.nan}
+
+    pair_label = f"{seller} → {customer}"
+    result["same_destination"] = pd.DataFrame([
+        describe(pair, pair_label),
+        describe(remaining.loc[remaining["customer_state"].eq(customer).fillna(False)],
+                 f"Other inter-state orders to {customer}"),
+    ])
+    periods = []
+    for scope, frame in ((pair_label, pair), ("Remaining inter-state orders", remaining)):
+        months = frame["order_purchase_timestamp"].dt.strftime("%Y-%m")
+        for start, end in (("2017-11", "2017-12"), ("2018-02", "2018-03"), ("2018-04", "2018-07")):
+            periods.append({"purchase_period": f"{start} to {end}",
+                            **describe(frame.loc[months.between(start, end)], scope)})
+    result["periods"] = pd.DataFrame(periods)
+    months = pair["order_purchase_timestamp"].dt.strftime("%Y-%m")
+    concentrated = pair.loc[months.isin(["2017-11", "2017-12", "2018-02", "2018-03"])]
+    row = describe(concentrated, pair_label)
+    row["order_share_pct"] = 100 * len(concentrated) / len(pair)
+    pair_late = int(pair["is_late"].sum())
+    row["late_share_pct"] = 100 * row["late_orders"] / pair_late if pair_late else np.nan
+    result["concentration"] = pd.DataFrame([row])
+    return result
+
+
 def summarize_focus_time(inter: pd.DataFrame, leading_pair: tuple[str, str] | None) -> dict[str, pd.DataFrame]:
     """Compare purchase months and approval hours/weekdays for a leading state pair."""
     required = {"order_id", "seller_group", "seller_state", "customer_state", "route_type",
@@ -169,6 +231,7 @@ def summarize_destination_states(focus: pd.DataFrame) -> dict[str, pd.DataFrame]
             orders=("is_late", "size"), late_orders=("is_late", "sum"),
         ).reset_index()
         table["late_rate_pct"] = 100 * table["late_orders"] / table["orders"]
+        table["order_share_pct"] = 100 * table["orders"] / len(selected) if len(selected) else np.nan
         total_late = int(selected["is_late"].sum())
         table["late_share_pct"] = 100 * table["late_orders"] / total_late if total_late else np.nan
         profiles[name] = table.sort_values(
