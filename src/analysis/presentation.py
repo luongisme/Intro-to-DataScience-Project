@@ -21,10 +21,12 @@ def format_analysis_table(table: DataFrame) -> Styler:
     """Format order counts, rates and durations without changing the analytical table."""
     formats = {}
     for column in table:
-        if column.endswith("orders") or column in {"evaluated", "unavailable"}:
-            formats[column] = "{:,.0f}"
-        elif column in {"late_rate_pct", "late_share_pct"}:
+        if column == "approval_weekday":
+            formats[column] = lambda value: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[int(value)]
+        elif column.endswith("_pct"):
             formats[column] = "{:.2f}%"
+        elif column.endswith("orders") or column in {"evaluated", "unavailable"}:
+            formats[column] = "{:,.0f}"
         elif column.endswith(("_hours", "_days")):
             formats[column] = "{:,.2f}"
         elif column == "is_late":
