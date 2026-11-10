@@ -6,7 +6,7 @@ import pytest
 from src.analysis.investigation import (
     measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
     investigate_delivery_stages, classify_order_routes, build_focus_cohort,
-    summarize_destination_states, summarize_state_pairs, summarize_focus_time, REVIEW_DESTINATION,
+    summarize_destination_states, summarize_state_pairs, summarize_focus_time, summarize_focus_comparisons, REVIEW_DESTINATION,
 )
 from src.analysis.orders import SLOT_LABELS
 
@@ -255,6 +255,7 @@ def test_state_pair_figure_uses_count_ranking_and_handles_empty_results():
         assert [label.get_text() for label in figure.axes[0].get_yticklabels()] == ["SP → RJ (N=100)"]
         assert figure.axes[0].patches[0].get_width() == 5
         assert figure.axes[1].patches[0].get_width() == 5
+        assert figure.axes[1].get_xlim()[0] <= 8.0 <= figure.axes[1].get_xlim()[1]
     finally:
         plt.close(figure)
     figure = plot_state_pairs(pairs.iloc[:0], float("nan"))
