@@ -194,6 +194,7 @@ def test_destination_figure_ranks_known_states_and_renders_empty_results():
 def test_state_pairs_count_each_order_once_and_keep_unresolved_groups():
     focus = pd.DataFrame({
         "order_id": ["single", "multi", "missing", "customer_review", "second", "outside"],
+        "items": [2, 2, 2, 1, 1, 1],
         "customer_state": ["RJ", "RJ", "RJ", pd.NA, "SP", "SP"],
         "location_status": ["known", "known", "known", "conflicting", "known", "known"],
         "route_type": ["Inter-state"] * 5 + ["Intra-state"],
@@ -227,7 +228,7 @@ def test_state_pairs_count_each_order_once_and_keep_unresolved_groups():
 def test_state_pairs_handle_empty_and_zero_late_cohorts():
     focus = pd.DataFrame({
         "order_id": ["A"], "customer_state": ["RJ"], "location_status": ["known"],
-        "route_type": ["Inter-state"], "is_late": [False],
+        "route_type": ["Inter-state"], "is_late": [False], "items": [1],
     })
     items = pd.DataFrame({"order_id": ["A"], "seller_state": ["SP"]})
     result = summarize_state_pairs(items, focus)
@@ -450,3 +451,170 @@ def test_investigation_figures_render_for_an_empty_cohort():
     finally:
         for figure in figures:
             plt.close(figure)
+
+
+
+def test_state_pairs_reject_partial_item_input():
+    focus = pd.DataFrame({"order_id": ["A"], "items": [2], "customer_state": ["RJ"],
+                          "location_status": ["known"], "route_type": ["Inter-state"],
+                          "is_late": [True]})
+    items = pd.DataFrame({"order_id": ["A", "A"], "seller_state": ["SP", "MG"]})
+    assert summarize_state_pairs(items, focus)["orders"].iloc[0]["seller_group"] == "Multiple seller states"
+    with pytest.raises(ValueError, match="complete cleaned item table"):
+        summarize_state_pairs(items.iloc[:1], focus)
+
+
+def test_matched_years_use_purchase_date_at_july_boundary():
+    frame = pd.DataFrame({
+        "order_id": ["A", "B"], "seller_group": ["Single seller state"] * 2,
+        "seller_state": ["SP"] * 2, "customer_state": ["RJ"] * 2,
+        "route_type": ["Inter-state"] * 2, "is_late": [True, False],
+        "order_purchase_timestamp": pd.to_datetime(["2018-07-31 23:00", "2018-08-01 11:00"]),
+        "order_approved_at": pd.to_datetime(["2018-08-01 12:00", "2018-08-01 13:00"]),
+        "approval_hour": [12, 13], "approval_weekday": [2, 2],
+    })
+    table = summarize_focus_time(frame, ("SP", "RJ"))["matched_years"]
+    selected = table.loc[table["year"].eq(2018)]
+    assert selected["orders"].tolist() == [1, 1]
+    assert selected["late_orders"].tolist() == [1, 1]
+
+
+def test_focus_comparisons_use_disjoint_scopes_and_weighted_period_rates():
+    frame = pd.DataFrame({
+        "order_id": list("ABCDE"), "seller_group": ["Single seller state"] * 5,
+        "seller_state": ["SP", "SP", "SP", "MG", "MG"], "customer_state": ["RJ"] * 5,
+        "route_type": ["Inter-state"] * 5, "is_late": [True, False, False, False, True],
+        "order_purchase_timestamp": pd.to_datetime([
+            "2017-11-01", "2017-12-01", "2017-12-02", "2017-11-01", "2018-04-01",
+        ]),
+    })
+    before = frame.copy(deep=True)
+    result = summarize_focus_comparisons(frame, ("SP", "RJ"))
+    assert result["same_destination"]["orders"].tolist() == [3, 2]
+    period = result["periods"].iloc[0]
+    assert (period["orders"], period["late_orders"]) == (3, 1)
+    assert period["late_rate_pct"] == pytest.approx(100 / 3)
+    assert result["concentration"].iloc[0]["late_share_pct"] == 100
+    assert result["concentration"].iloc[0]["order_share_pct"] == 100
+    assert summarize_focus_comparisons(frame, None)["periods"].empty
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("leading_pair", [("SP", "RJ"), None])
+@pytest.mark.parametrize("defect, message", [
+    ("duplicate", "one row per non-null order_id"),
+    ("missing_id", "one row per non-null order_id"),
+    ("intra_state", "only inter-state orders"),
+    ("missing_route", "only inter-state orders"),
+    ("missing_purchase", "must be complete"),
+    ("missing_outcome", "must be complete"),
+    ("missing_column", "Missing focus comparison columns"),
+])
+def test_focus_comparisons_reject_invalid_cohorts(defect, message, leading_pair):
+    frame = pd.DataFrame({
+        "order_id": ["A", "B"], "seller_group": ["Single seller state"] * 2,
+        "seller_state": ["SP", "MG"], "customer_state": ["RJ"] * 2,
+        "route_type": pd.Series(["Inter-state"] * 2, dtype="string"),
+        "is_late": pd.Series([True, False], dtype="boolean"),
+        "order_purchase_timestamp": pd.to_datetime(["2017-11-01", "2017-12-01"]),
+    })
+    if defect == "duplicate":
+        frame = pd.concat([frame, frame.iloc[:1]], ignore_index=True)
+    elif defect == "missing_id":
+        frame.loc[1, "order_id"] = pd.NA
+    elif defect == "intra_state":
+        frame.loc[1, "route_type"] = "Intra-state"
+    elif defect == "missing_route":
+        frame.loc[1, "route_type"] = pd.NA
+    elif defect == "missing_purchase":
+        frame.loc[1, "order_purchase_timestamp"] = pd.NaT
+    elif defect == "missing_outcome":
+        frame.loc[1, "is_late"] = pd.NA
+    else:
+        frame = frame.drop(columns="seller_state")
+    before = frame.copy(deep=True)
+    with pytest.raises(ValueError, match=message):
+        summarize_focus_comparisons(frame, leading_pair)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("defect", ["duplicate", "missing"])
+def test_state_pairs_reject_invalid_item_keys(defect):
+    focus = pd.DataFrame({
+        "order_id": ["A"], "items": [2], "customer_state": ["RJ"],
+        "location_status": ["known"], "route_type": ["Inter-state"], "is_late": [True],
+    })
+    items = pd.DataFrame({
+        "order_id": ["A", "A", "outside", "outside"],
+        "order_item_id": pd.Series([1, 2, pd.NA, pd.NA], dtype="Int64"),
+        "seller_state": ["SP", "MG", "SP", "SP"],
+    })
+    assert summarize_state_pairs(items, focus)["orders"].iloc[0]["seller_group"] == "Multiple seller states"
+    items.loc[1, "order_item_id"] = 1 if defect == "duplicate" else pd.NA
+    before = items.copy(deep=True)
+    with pytest.raises(ValueError, match="unique, non-null"):
+        summarize_state_pairs(items, focus)
+    pd.testing.assert_frame_equal(items, before)
+
+
+@pytest.mark.parametrize("outcome", [2, -1, 0.5, "True", "1"])
+def test_focus_comparisons_reject_nonbinary_outcomes(outcome):
+    frame = pd.DataFrame({
+        "order_id": ["A"], "seller_group": ["Single seller state"],
+        "seller_state": ["SP"], "customer_state": ["RJ"], "route_type": ["Inter-state"],
+        "is_late": [outcome], "order_purchase_timestamp": pd.to_datetime(["2017-11-01"]),
+    })
+    before = frame.copy(deep=True)
+    with pytest.raises(ValueError, match="only booleans or numeric 0/1"):
+        summarize_focus_comparisons(frame, ("SP", "RJ"))
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("dtype", ["bool", "boolean", "int64", "Int64", "float64"])
+def test_focus_comparisons_accept_binary_outcomes(dtype):
+    frame = pd.DataFrame({
+        "order_id": ["A", "B"], "seller_group": ["Single seller state"] * 2,
+        "seller_state": ["SP"] * 2, "customer_state": ["RJ"] * 2,
+        "route_type": ["Inter-state"] * 2,
+        "is_late": pd.Series([1, 0], dtype=dtype),
+        "order_purchase_timestamp": pd.to_datetime(["2017-11-01", "2017-11-02"]),
+    })
+    before = frame.copy(deep=True)
+    row = summarize_focus_comparisons(frame, ("SP", "RJ"))["same_destination"].iloc[0]
+    assert (row["orders"], row["late_orders"], row["late_rate_pct"]) == (2, 1, 50)
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("dtype", ["Int64", "float64", "object"])
+def test_state_pairs_reject_missing_reference_item_counts(dtype):
+    focus = pd.DataFrame({
+        "order_id": ["A", "B"], "items": pd.Series([None, None], dtype=dtype),
+        "customer_state": ["RJ", "SP"], "location_status": ["known"] * 2,
+        "route_type": ["Inter-state", "Intra-state"], "is_late": [True, False],
+    })
+    items = pd.DataFrame({"order_id": ["A"], "order_item_id": [1], "seller_state": ["SP"]})
+    before = focus.copy(deep=True)
+    with pytest.raises(ValueError, match="Reference item counts must be complete"):
+        summarize_state_pairs(items, focus)
+    pd.testing.assert_frame_equal(focus, before)
+    focus.loc[0, "items"] = 1
+    result = summarize_state_pairs(items, focus)
+    assert result["pairs"]["orders"].sum() == 1
+
+
+def test_weekday_display_preserves_numeric_codes():
+    from src.analysis.presentation import format_analysis_table
+    table = pd.DataFrame({"approval_weekday": [0, 4, 6]})
+    html = format_analysis_table(table).to_html()
+    assert all(day in html for day in ("Mon", "Fri", "Sun"))
+    assert table["approval_weekday"].tolist() == [0, 4, 6]
+
+
+
+def test_route_states_use_consistent_whitespace_normalization():
+    items = pd.DataFrame({"order_id": ["A"], "customer_state": ["SP"], "seller_state": [" SP "]})
+    orders = pd.DataFrame({"order_id": ["A"]})
+    before = items.copy(deep=True)
+    routes = classify_order_routes(items, orders)
+    assert routes.iloc[0]["route_type"] == "Intra-state"
+    pd.testing.assert_frame_equal(items, before)

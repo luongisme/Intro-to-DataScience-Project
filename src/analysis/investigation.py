@@ -76,7 +76,7 @@ def summarize_focus_time(inter: pd.DataFrame, leading_pair: tuple[str, str] | No
 def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Count inter-state orders by seller and customer state without splitting orders."""
     required_items = {"order_id", "seller_state"}
-    required_focus = {"order_id", "customer_state", "location_status", "route_type", "is_late"}
+    required_focus = {"order_id", "customer_state", "location_status", "route_type", "is_late", "items"}
     for frame, required, label in ((items, required_items, "items"),
                                     (focus, required_focus, "focus")):
         missing = required.difference(frame.columns)
@@ -85,6 +85,13 @@ def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str,
     if focus["order_id"].isna().any() or not focus["order_id"].is_unique:
         raise ValueError("State pairs require one row per non-null focus order.")
     inter = focus.loc[focus["route_type"].eq("Inter-state")].copy()
+    if inter["items"].isna().any():
+        raise ValueError("Reference item counts must be complete for inter-state orders.")
+    if "order_item_id" in items.columns:
+        item_keys = items.loc[items["order_id"].isin(inter["order_id"]),
+                              ["order_id", "order_item_id"]]
+        if item_keys.isna().any().any() or item_keys.duplicated().any():
+            raise ValueError("Selected items require unique, non-null (order_id, order_item_id) keys.")
     selected = items.loc[items["order_id"].isin(inter["order_id"]),
                          ["order_id", "seller_state"]].copy()
     selected["seller_state"] = selected["seller_state"].astype("string").str.strip().replace("", pd.NA)
@@ -95,6 +102,12 @@ def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str,
     inter = inter.merge(grouped, on="order_id", how="left", validate="one_to_one")
     if inter["seller_state_count"].isna().any():
         raise ValueError("Some inter-state orders have no source items.")
+    received = selected.groupby("order_id", observed=True).size()
+    mismatched = inter["order_id"].map(received).ne(inter["items"])
+    if mismatched.any():
+        examples = inter.loc[mismatched, "order_id"].head(5).tolist()
+        raise ValueError(f"Item counts differ for {int(mismatched.sum())} inter-state orders, "
+                         f"including {examples}. Supply the complete cleaned item table.")
     known_customer = (inter["location_status"].eq("known")
                       & inter["customer_state"].astype("string").str.strip().ne("").fillna(False))
     complete_seller = inter["missing_seller_items"].eq(0)
