@@ -10,6 +10,7 @@ from src.analysis.investigation import investigate_delivery_stages
 from src.analysis.orders import SLOT_LABELS
 from src.analysis.route_stages import compare_route_delivery_stages, summarize_afternoon_route_evidence
 from src.analysis.investigation_plots import plot_route_period_slot_rates
+from src.analysis.presentation import format_analysis_table
 
 
 def stage_fixture():
@@ -258,3 +259,38 @@ def test_period_slot_heatmap_shows_counts_and_undefined_cells():
     pd.testing.assert_frame_equal(table, before)
     with pytest.raises(ValueError, match="all purchase-period"):
         plot_route_period_slot_rates(table.iloc[1:])
+
+
+def test_route_tables_show_units_scope_and_formatted_counts_without_mutation():
+    tables = [
+        pd.DataFrame({"raw_late_rate_pct": [3.14159],
+                      "standardized_late_rate_pct": [4.5],
+                      "difference_pp_vs_12_18": [1.23456],
+                      "common_months": [21]}),
+        pd.DataFrame({"inter_state_orders": [12345], "selected_pair": [2345],
+                      "inter_state_unknown_destination": [1234],
+                      "other_to_destination": [7890]}),
+        pd.DataFrame({"valid_intervals": [1234], "unavailable_intervals": [2],
+                      "median_calendar_hours": [24.234], "p75_eligible_hours": [35.678]}),
+        pd.DataFrame({"evaluated": [2345], "negative_windows": [3],
+                      "median_days": [25.5], "p75_days": [30.25]}),
+    ]
+    originals = [table.copy(deep=True) for table in tables]
+    rendered = [format_analysis_table(table).to_html() for table in tables]
+    for label in ("Full-cohort raw late rate", "Standardized late rate",
+                  "Difference from 12:00–18:00 (pp)", "Common purchase months",
+                  "Inter-state orders with unknown destination", "Selected pair orders",
+                  "Other inter-state orders to destination", "Valid stage intervals",
+                  "Unavailable stage intervals", "Median elapsed time (h)",
+                  "P75 eligible-day time (h)", "Evaluated promised windows",
+                  "Median promised window (days)", "P75 promised window (days)"):
+        assert any(label in html for html in rendered)
+    assert "3.14%" in rendered[0]
+    assert "1.23" in rendered[0]
+    assert "1.23456" not in rendered[0]
+    assert all(value in rendered[1] for value in ("12,345", "2,345", "1,234", "7,890"))
+    assert "24.23" in rendered[2]
+    assert "35.68" in rendered[2]
+    assert "30.25" in rendered[3]
+    for table, original in zip(tables, originals):
+        pd.testing.assert_frame_equal(table, original)
