@@ -155,6 +155,27 @@ def test_route_stages_accept_zero_valid_duration():
     assert row.iloc[0]["median_calendar_hours"] == 0
 
 
+@pytest.mark.parametrize("excess_hours,accepted", [
+    (5e-11, True),
+    (2e-9, False),
+])
+def test_route_stages_limit_floating_point_duration_tolerance(excess_hours, accepted):
+    items, orders, routes = stage_fixture()
+    profiles = investigate_delivery_stages(orders)
+    mask = profiles["records"].order_id.eq("A") & profiles["records"].stage.eq("Processing")
+    records = profiles["records"]
+    records.loc[mask, "eligible_hours"] = records.loc[mask, "calendar_hours"] + excess_hours
+    args = (items, orders, routes, orders.loc[orders.order_id.eq("A")], profiles, ("SP", "RJ"))
+    if accepted:
+        result = compare_route_delivery_stages(*args)
+        selected = result["stages"].query("period == 'Nov–Dec 2017' and group == 'SP → RJ' "
+                                           "and approval_slot == @SLOT_LABELS[2] and stage == 'Processing'")
+        assert selected.iloc[0]["valid_intervals"] == 1
+    else:
+        with pytest.raises(ValueError, match="Valid stage durations"):
+            compare_route_delivery_stages(*args)
+
+
 @pytest.mark.parametrize("purchase_date,expected_period", [
     ("2017-10-31", None),
     ("2017-11-01", "Nov–Dec 2017"),
