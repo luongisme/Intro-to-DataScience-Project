@@ -34,6 +34,7 @@ def stage_fixture():
     })
     items = pd.DataFrame({
         "order_id": ["A", "A", "B", "C", "D", "E"],
+        "order_item_id": [1, 2, 1, 1, 1, 1],
         "customer_state": ["RJ", "RJ", "RJ", "RJ", "RJ", "MG"],
         "seller_state": ["SP", "SP", "MG", "ES", "MG", "SP"],
     })
@@ -91,6 +92,66 @@ def test_route_stages_reject_mislabelled_selected_pair():
     with pytest.raises(ValueError, match="seller and customer states"):
         compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("B")],
                                       investigate_delivery_stages(orders), ("SP", "RJ"))
+
+
+def test_route_stages_reject_missing_pair_orders():
+    items, orders, routes = stage_fixture()
+    with pytest.raises(ValueError, match="complete state-pair cohort"):
+        compare_route_delivery_stages(items, orders, routes, orders.iloc[:0],
+                                      investigate_delivery_stages(orders), ("SP", "RJ"))
+
+
+def test_route_stages_reject_partially_selected_pair():
+    items, orders, routes = stage_fixture()
+    items.loc[items.order_id.eq("B"), "seller_state"] = "SP"
+    with pytest.raises(ValueError, match="complete state-pair cohort"):
+        compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                      investigate_delivery_stages(orders), ("SP", "RJ"))
+
+
+def test_route_stages_allow_a_genuinely_empty_pair():
+    items, orders, routes = stage_fixture()
+    items.loc[items.order_id.eq("A"), "seller_state"] = "MG"
+    result = compare_route_delivery_stages(items, orders, routes, orders.iloc[:0],
+                                            investigate_delivery_stages(orders), ("SP", "RJ"))
+    assert result["coverage"]["selected_pair"].eq(0).all()
+    assert result["coverage"].iloc[0]["other_to_destination"] == 3
+
+
+@pytest.mark.parametrize("bad_key", ["duplicate", "missing"])
+def test_route_stages_reject_invalid_item_keys(bad_key):
+    items, orders, routes = stage_fixture()
+    items.loc[1, "order_item_id"] = 1 if bad_key == "duplicate" else None
+    with pytest.raises(ValueError, match="unique, non-null item keys"):
+        compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                      investigate_delivery_stages(orders), ("SP", "RJ"))
+
+
+@pytest.mark.parametrize("column,value", [
+    ("calendar_hours", -24),
+    ("eligible_hours", float("inf")),
+    ("eligible_hours", 25),
+])
+def test_route_stages_reject_invalid_valid_durations(column, value):
+    items, orders, routes = stage_fixture()
+    profiles = investigate_delivery_stages(orders)
+    mask = profiles["records"].order_id.eq("A") & profiles["records"].stage.eq("Processing")
+    profiles["records"].loc[mask, column] = value
+    with pytest.raises(ValueError, match="Valid stage durations"):
+        compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                      profiles, ("SP", "RJ"))
+
+
+def test_route_stages_accept_zero_valid_duration():
+    items, orders, routes = stage_fixture()
+    profiles = investigate_delivery_stages(orders)
+    mask = profiles["records"].order_id.eq("A") & profiles["records"].stage.eq("Processing")
+    profiles["records"].loc[mask, ["calendar_hours", "eligible_hours"]] = 0.0
+    result = compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                            profiles, ("SP", "RJ"))
+    row = result["stages"].query("period == 'Nov–Dec 2017' and group == 'SP → RJ' "
+                                  "and approval_slot == @SLOT_LABELS[2] and stage == 'Processing'")
+    assert row.iloc[0]["median_calendar_hours"] == 0
 
 
 def test_period_slot_heatmap_shows_counts_and_undefined_cells():

@@ -25,7 +25,8 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
     invalid-interval status and eligible-day calendar convention.
     """
     needed = {"order_id", "order_purchase_timestamp", "approval_slot", "is_late"}
-    if needed.difference(orders.columns) or {"order_id", "customer_state", "seller_state"}.difference(items.columns):
+    item_fields = {"order_id", "order_item_id", "customer_state", "seller_state"}
+    if needed.difference(orders.columns) or item_fields.difference(items.columns):
         raise ValueError("Orders or items lack route-stage comparison columns.")
     if {"order_id", "route_type", "items"}.difference(routes.columns):
         raise ValueError("Routes require order ID, route type and item counts.")
@@ -51,7 +52,10 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
         raise ValueError("Stage profiles require records and windows.")
 
     selected = items.loc[items["order_id"].isin(orders["order_id"]),
-                         ["order_id", "customer_state", "seller_state"]].copy()
+                         ["order_id", "order_item_id", "customer_state", "seller_state"]].copy()
+    keys = selected[["order_id", "order_item_id"]]
+    if keys.isna().any().any() or keys.duplicated().any():
+        raise ValueError("Selected items require unique, non-null item keys.")
     state = selected["customer_state"].astype("string").str.strip()
     seller = selected["seller_state"].astype("string").str.strip()
     selected["customer_state"] = state.replace("", pd.NA)
@@ -74,6 +78,11 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
     if not set(pair_orders["order_id"]).issubset(set(destination.index[destination["all_pair_items"]])):
         raise ValueError("Selected pair must have the stated seller and customer states on every item.")
     pair_ids = set(pair_orders["order_id"])
+    expected_pair_ids = set(destination.index[destination["all_pair_items"]])
+    if pair_ids != expected_pair_ids:
+        raise ValueError("Selected pair order IDs must match the complete state-pair cohort.")
+    if not route_view.loc[list(pair_ids), "route_type"].eq("Inter-state").all():
+        raise ValueError("Selected pair conflicts with inter-state route classification.")
     view = orders[["order_id", "order_purchase_timestamp", "approval_slot", "is_late"]].reset_index(drop=True).copy()
     view = view.join(route_view["route_type"].reindex(view["order_id"]).reset_index(drop=True))
     view = view.join(destination[["all_destination", "complete_destination"]].reindex(view["order_id"]).reset_index(drop=True))
@@ -88,8 +97,6 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
         [f"{state_pair[0]} → {state_pair[1]}", f"Other inter-state to {state_pair[1]}"],
         default="Outside comparison",
     )
-    if not view.loc[view["order_id"].isin(pair_ids), "route_type"].eq("Inter-state").all():
-        raise ValueError("Selected pair conflicts with inter-state route classification.")
     groups = (f"{state_pair[0]} → {state_pair[1]}", f"Other inter-state to {state_pair[1]}")
     coverage = []
     for period, _, _ in PURCHASE_PERIODS:
@@ -126,15 +133,23 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
     if (not records["stage"].isin(STAGES).all()
             or records.groupby("order_id", observed=True)["stage"].nunique().ne(len(STAGES)).any()):
         raise ValueError("Each order requires both delivery-stage records.")
+    valid_records = records["status"].eq("valid")
+    durations = records[["calendar_hours", "eligible_hours"]]
+    if (not records["status"].isin(["valid", "missing_endpoint", "reversed"]).all()
+            or durations.loc[valid_records].isna().any().any()
+            or durations.loc[~valid_records].notna().any().any()):
+        raise ValueError("Stage status and duration values disagree.")
+    valid_durations = durations.loc[valid_records]
+    # Allow floating-point differences below 1e-9 hours.
+    if (not all(pd.api.types.is_numeric_dtype(valid_durations[column]) for column in valid_durations)
+            or not np.isfinite(valid_durations.to_numpy(dtype=float)).all()
+            or valid_durations.lt(0).any().any()
+            or valid_durations["eligible_hours"].gt(valid_durations["calendar_hours"] + 1e-9).any()):
+        raise ValueError("Valid stage durations must be finite, non-negative and eligible hours cannot exceed calendar hours.")
     stage_rows = cohort[["order_id", "period", "group", "approval_slot", "is_late"]].merge(
         records[["order_id", "stage", "status", "calendar_hours", "eligible_hours"]],
         on="order_id", validate="one_to_many",
     )
-    valid = stage_rows["status"].eq("valid")
-    if (not stage_rows["status"].isin(["valid", "missing_endpoint", "reversed"]).all()
-            or stage_rows.loc[valid, ["calendar_hours", "eligible_hours"]].isna().any().any()
-            or stage_rows.loc[~valid, ["calendar_hours", "eligible_hours"]].notna().any().any()):
-        raise ValueError("Stage status and duration values disagree.")
 
     def duration_summary(keys, grid):
         table = stage_rows.groupby(keys, observed=True).agg(
