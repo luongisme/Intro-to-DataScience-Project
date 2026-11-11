@@ -171,3 +171,46 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
     promises["unavailable_windows"] = promises["orders"] - promises["evaluated"]
     return {"coverage": pd.DataFrame(coverage), "outcomes": outcome,
             "stages": stages, "by_outcome": by_outcome, "promises": promises}
+
+
+def summarize_afternoon_route_evidence(comparison: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Join the afternoon outcomes with recorded stage and promised-window medians."""
+    required = {"outcomes", "stages", "promises"}
+    if not required.issubset(comparison):
+        raise ValueError(f"Missing comparison tables: {sorted(required.difference(comparison))}")
+    keys = ["period", "group", "approval_slot"]
+    outcome = comparison["outcomes"].loc[
+        comparison["outcomes"]["approval_slot"].eq(SLOT_LABELS[2]),
+        [*keys, "orders", "late_orders", "late_rate_pct"],
+    ].copy()
+    stages = comparison["stages"].loc[
+        comparison["stages"]["approval_slot"].eq(SLOT_LABELS[2]),
+        [*keys, "stage", "orders", "median_calendar_hours"],
+    ]
+    promises = comparison["promises"].loc[
+        comparison["promises"]["approval_slot"].eq(SLOT_LABELS[2]),
+        [*keys, "orders", "median_days"],
+    ]
+    if (outcome.duplicated(keys).any() or stages.duplicated([*keys, "stage"]).any()
+            or promises.duplicated(keys).any()):
+        raise ValueError("Afternoon evidence requires unique period and group rows.")
+    if len(stages) != 2 * len(outcome) or not stages["stage"].isin(STAGES).all():
+        raise ValueError("Both delivery stages must cover each afternoon group.")
+    wide = stages.pivot(index=keys, columns="stage", values="median_calendar_hours")
+    wide = wide.rename(columns={"Processing": "median_processing_hours",
+                                "Carrier transit": "median_transit_hours"}).reset_index()
+    result = outcome.merge(wide, on=keys, how="left", validate="one_to_one")
+    result = result.merge(promises.rename(columns={"median_days": "median_promised_days"}),
+                          on=keys, how="left", validate="one_to_one", suffixes=("", "_promise"))
+    if len(result) != len(outcome) or result["orders_promise"].isna().any():
+        raise ValueError("Promised windows must cover every afternoon group.")
+    if not result["orders"].eq(result["orders_promise"]).all():
+        raise ValueError("Afternoon outcome and promised-window order counts differ.")
+    stage_counts = stages.merge(outcome[[*keys, "orders"]], on=keys, how="left",
+                                validate="many_to_one", suffixes=("_stage", "_outcome"))
+    if stage_counts["orders_outcome"].isna().any() or not stage_counts["orders_stage"].eq(
+        stage_counts["orders_outcome"]
+    ).all():
+        raise ValueError("Afternoon stage and outcome order counts differ.")
+    return result[["period", "group", "orders", "late_orders", "late_rate_pct",
+                   "median_processing_hours", "median_transit_hours", "median_promised_days"]]

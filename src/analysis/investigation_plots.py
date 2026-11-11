@@ -2,12 +2,67 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 from .orders import SLOT_LABELS
 from .investigation import REVIEW_DESTINATION
 
 
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
+
+
+def plot_route_period_slot_rates(outcomes):
+    """Show matched late rates with order denominators on a shared color scale."""
+    required = {"period", "group", "approval_slot", "orders", "late_orders", "late_rate_pct"}
+    missing = required.difference(outcomes.columns)
+    if missing:
+        raise ValueError(f"Missing route-period outcome columns: {sorted(missing)}")
+    if outcomes.duplicated(["period", "group", "approval_slot"]).any():
+        raise ValueError("Each period, group and approval slot requires one row.")
+    groups = outcomes["group"].drop_duplicates().tolist()
+    periods = outcomes["period"].drop_duplicates().tolist()
+    if len(groups) != 2 or not periods:
+        raise ValueError("Rate comparison requires two groups and at least one purchase period.")
+    if ((outcomes["orders"] < 0).any() or (outcomes["late_orders"] < 0).any()
+            or (outcomes["late_orders"] > outcomes["orders"]).any()):
+        raise ValueError("Order counts must be nonnegative with late orders within total orders.")
+    if ((outcomes["orders"].eq(0) & outcomes["late_rate_pct"].notna()).any()
+            or (outcomes["orders"].gt(0) & ~np.isclose(
+                outcomes["late_rate_pct"],
+                100 * outcomes["late_orders"] / outcomes["orders"].replace(0, np.nan),
+                equal_nan=False,
+            )).any()):
+        raise ValueError("Late rates must use the matching order denominators.")
+
+    maximum = max(1, outcomes["late_rate_pct"].max(skipna=True))
+    figure, axes = plt.subplots(1, 2, figsize=(15, 5.4), sharey=True, layout="constrained")
+    color_map = plt.colormaps["Greens"].with_extremes(bad="#eeeeee")
+    for ax, group in zip(axes, groups):
+        rows = outcomes.loc[outcomes["group"].eq(group)].set_index(["period", "approval_slot"])
+        grid = pd.MultiIndex.from_product([periods, SLOT_LABELS], names=["period", "approval_slot"])
+        rows = rows.reindex(grid)
+        if rows["orders"].isna().any():
+            plt.close(figure)
+            raise ValueError("Every group requires all purchase-period and approval-slot cells.")
+        rates = rows["late_rate_pct"].to_numpy(dtype=float).reshape(len(periods), len(SLOT_LABELS))
+        counts = rows["orders"].to_numpy(dtype=float).reshape(len(periods), len(SLOT_LABELS))
+        heatmap = ax.imshow(np.ma.masked_invalid(rates), cmap=color_map, vmin=0, vmax=maximum,
+                            aspect="auto")
+        for row in range(len(periods)):
+            for column in range(len(SLOT_LABELS)):
+                count = counts[row, column]
+                rate = rates[row, column]
+                label = (f"{rate:.1f}%\nN={int(count):,}" if np.isfinite(rate)
+                         else "—\nN=0")
+                ax.text(column, row, label, ha="center", va="center", fontsize=8,
+                        color="white" if np.isfinite(rate) and rate > maximum * .58 else "#222222")
+        ax.set_xticks(range(len(SLOT_LABELS)), SLOT_LABELS, rotation=35, ha="right")
+        ax.set_yticks(range(len(periods)), periods)
+        ax.set_title(group)
+    figure.colorbar(heatmap, ax=axes, label="Late orders / group orders (%)", shrink=.85)
+    figure.suptitle("Late delivery by purchase period, destination group and approval slot")
+    figure.supxlabel("N = all orders in each cell; gray cells have no orders")
+    return figure
 
 
 def plot_route_period_medians(table, value, title, ylabel):

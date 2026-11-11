@@ -2,10 +2,14 @@
 
 import pandas as pd
 import pytest
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from src.analysis.investigation import investigate_delivery_stages
 from src.analysis.orders import SLOT_LABELS
-from src.analysis.route_stages import compare_route_delivery_stages
+from src.analysis.route_stages import compare_route_delivery_stages, summarize_afternoon_route_evidence
+from src.analysis.investigation_plots import plot_route_period_slot_rates
 
 
 def stage_fixture():
@@ -49,6 +53,13 @@ def test_route_stages_keep_disjoint_orders_and_purchase_periods():
                                                       profiles["records"], profiles["windows"])]
     result = compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
                                             profiles, ("SP", "RJ"))
+    evidence = summarize_afternoon_route_evidence(result)
+    assert len(evidence) == 6
+    selected = evidence.loc[evidence["group"].eq("SP → RJ") &
+                            evidence["period"].eq("Nov–Dec 2017")].iloc[0]
+    assert selected["orders"] == 1
+    assert selected["median_processing_hours"] == 24
+    assert selected["median_transit_hours"] == 24
     november = result["outcomes"].query("period == 'Nov–Dec 2017' and approval_slot == @SLOT_LABELS[2]")
     assert november["orders"].tolist() == [1, 2]
     assert november["late_orders"].tolist() == [0, 2]
@@ -80,3 +91,29 @@ def test_route_stages_reject_mislabelled_selected_pair():
     with pytest.raises(ValueError, match="seller and customer states"):
         compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("B")],
                                       investigate_delivery_stages(orders), ("SP", "RJ"))
+
+
+def test_period_slot_heatmap_shows_counts_and_undefined_cells():
+    rows = []
+    for period in ("First", "Second"):
+        for group in ("SP → RJ", "Other inter-state to RJ"):
+            for slot in SLOT_LABELS:
+                count = 0 if period == "Second" and slot == SLOT_LABELS[3] else 4
+                late = 1 if count and group == "SP → RJ" else 0
+                rows.append((period, group, slot, count, late,
+                             100 * late / count if count else float("nan")))
+    table = pd.DataFrame(rows, columns=["period", "group", "approval_slot",
+                                        "orders", "late_orders", "late_rate_pct"])
+    before = table.copy(deep=True)
+    figure = plot_route_period_slot_rates(table)
+    try:
+        figure.canvas.draw()
+        assert figure.axes[0].images[0].norm.vmax == figure.axes[1].images[0].norm.vmax
+        labels = [text.get_text() for text in figure.axes[0].texts]
+        assert "25.0%\nN=4" in labels
+        assert "—\nN=0" in labels
+    finally:
+        plt.close(figure)
+    pd.testing.assert_frame_equal(table, before)
+    with pytest.raises(ValueError, match="all purchase-period"):
+        plot_route_period_slot_rates(table.iloc[1:])
