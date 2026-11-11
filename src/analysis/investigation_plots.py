@@ -10,6 +10,37 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_route_period_medians(table, value, title, ylabel):
+    """Compare two destination cohorts by approval slot within three purchase periods."""
+    periods = table["period"].drop_duplicates().tolist()
+    groups = table["group"].drop_duplicates().tolist()
+    figure, axes = plt.subplots(1, len(periods), figsize=(17, 5.5), sharey=True,
+                               layout="constrained")
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    colors = ("#377eb8", "#388443")
+    for ax, period in zip(axes, periods):
+        for group_number, (group, color) in enumerate(zip(groups, colors)):
+            rows = table.loc[table["period"].eq(period) & table["group"].eq(group)]
+            rows = rows.set_index("approval_slot").reindex(SLOT_LABELS)
+            values = rows[value].to_numpy(dtype=float)
+            positions = np.arange(len(SLOT_LABELS)) + (group_number - .5) * .36
+            ax.bar(positions, values, width=.36, color=color, label=group)
+            for x, height, count in zip(positions, values, rows["orders"].fillna(0)):
+                ax.annotate(f"N={int(count):,}", (x, height if np.isfinite(height) else 0),
+                            xytext=(0, 3), textcoords="offset points", ha="center",
+                            va="bottom", rotation=90, fontsize=7)
+        ax.set_xticks(range(len(SLOT_LABELS)), SLOT_LABELS, rotation=35, ha="right")
+        ax.set_title(period)
+        ax.margins(y=.25)
+    axes[0].set_ylabel(ylabel)
+    if groups:
+        axes[-1].legend(frameon=False, fontsize=8)
+    figure.suptitle(title)
+    figure.supxlabel("N = all orders in each purchase period, destination group and approval slot")
+    return figure
+
+
 def plot_state_pair_slots(raw, state_pair):
     """Show late counts and rates for all four approval slots of one state pair."""
     figure, axes = plt.subplots(1, 2, figsize=(13, 5.5), layout="constrained")
