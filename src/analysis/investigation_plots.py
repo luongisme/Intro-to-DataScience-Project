@@ -10,6 +10,53 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_state_pair_slots(raw, state_pair):
+    """Show late counts and rates for all four approval slots of one state pair."""
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5.5), layout="constrained")
+    rows = raw.set_index("approval_slot").reindex(SLOT_LABELS)
+    positions = np.arange(len(SLOT_LABELS))
+    for ax, field, color, title, ylabel in (
+        (axes[0], "late_orders", "#377eb8", "Late order counts", "Late orders"),
+        (axes[1], "late_rate_pct", "#388443", "Late delivery rates", "Late orders / slot orders (%)"),
+    ):
+        values = rows[field].to_numpy(dtype=float)
+        ax.bar(positions, values, color=color, width=0.72)
+        for position, (value, count) in enumerate(zip(values, rows["orders"])):
+            ax.annotate(f"N={int(count):,}", (position, value if np.isfinite(value) else 0),
+                        xytext=(0, 4), textcoords="offset points", ha="center", fontsize=8)
+        ax.set_xticks(positions, SLOT_LABELS)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.margins(y=0.2)
+    figure.suptitle(f"{state_pair[0]} → {state_pair[1]} | Delivery outcomes by approval slot")
+    figure.supxlabel("N = all orders in the state pair and approval slot")
+    return figure
+
+
+def plot_state_pair_months(monthly, state_pair):
+    """Show monthly slot rates alongside their denominators without interpolation."""
+    figure, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True, layout="constrained")
+    months = monthly["purchase_month"].drop_duplicates().tolist()
+    x = np.arange(len(months))
+    colors = ("#377eb8", "#e76f51", "#388443", "#9467bd")
+    for slot, color in zip(SLOT_LABELS, colors):
+        rows = monthly.loc[monthly["approval_slot"].eq(slot)].set_index("purchase_month").reindex(months)
+        axes[0].plot(x, rows["late_rate_pct"].to_numpy(dtype=float), marker="o",
+                     markersize=3, color=color, label=slot)
+        axes[1].plot(x, rows["orders"].to_numpy(dtype=float), marker="o",
+                     markersize=3, color=color, label=slot)
+    axes[0].set_ylabel("Late orders / monthly slot orders (%)")
+    axes[1].set_ylabel("Orders (N)")
+    axes[0].set_title("Late delivery rate by purchase month")
+    axes[1].set_title("Order count by purchase month")
+    axes[1].set_xticks(x[::2], months[::2], rotation=45, ha="right")
+    if months:
+        axes[0].legend(ncols=4, frameon=False)
+    figure.suptitle(f"{state_pair[0]} → {state_pair[1]} | Purchase month × approval slot")
+    figure.supxlabel("Missing points indicate months with no orders in that slot; exact counts appear in the table")
+    return figure
+
+
 def plot_focus_months(monthly):
     """Show monthly late rates and order denominators for both focus scopes."""
     figure, axes = plt.subplots(3, 1, figsize=(13, 9.5), sharex=True, layout="constrained")
