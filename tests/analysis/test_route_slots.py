@@ -44,9 +44,9 @@ def test_common_month_rates_use_pooled_month_weights_and_purchase_date():
     rows = []
     for month, slot, count, late in (
         ("2018-01", 0, 1, 1), ("2018-01", 1, 1, 0),
-        ("2018-01", 2, 3, 0), ("2018-01", 3, 1, 0),
-        ("2018-02", 0, 3, 0), ("2018-02", 1, 1, 0),
-        ("2018-02", 2, 1, 0), ("2018-02", 3, 1, 0),
+        ("2018-01", 2, 1, 0), ("2018-01", 3, 1, 0),
+        ("2018-02", 0, 3, 0), ("2018-02", 1, 3, 0),
+        ("2018-02", 2, 3, 0), ("2018-02", 3, 3, 0),
     ):
         for i in range(count):
             rows.append((f"{month}-{slot}-{i}", SLOT_LABELS[slot], i < late,
@@ -60,8 +60,8 @@ def test_common_month_rates_use_pooled_month_weights_and_purchase_date():
     assert raw.loc[SLOT_LABELS[0], "late_rate_pct"] == pytest.approx(25)
     assert raw.loc[SLOT_LABELS[0], "late_rate_95_lower_pct"] < 25
     assert raw.loc[SLOT_LABELS[0], "late_rate_95_upper_pct"] > 25
-    assert weighted.loc[SLOT_LABELS[0], "standardized_late_rate_pct"] == pytest.approx(50)
-    assert weighted.loc[SLOT_LABELS[0], "difference_pp_vs_12_18"] == pytest.approx(50)
+    assert weighted.loc[SLOT_LABELS[0], "standardized_late_rate_pct"] == pytest.approx(25)
+    assert weighted.loc[SLOT_LABELS[0], "difference_pp_vs_12_18"] == pytest.approx(25)
     assert weighted["common_months"].eq(2).all()
     assert weighted["excluded_orders"].eq(0).all()
     assert results["monthly"]["orders"].sum() == len(frame)

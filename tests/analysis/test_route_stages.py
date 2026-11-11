@@ -154,6 +154,86 @@ def test_route_stages_accept_zero_valid_duration():
     assert row.iloc[0]["median_calendar_hours"] == 0
 
 
+@pytest.mark.parametrize("purchase_date,expected_period", [
+    ("2017-10-31", None),
+    ("2017-11-01", "Nov–Dec 2017"),
+    ("2017-12-31", "Nov–Dec 2017"),
+    ("2018-01-01", None),
+    ("2018-01-31", None),
+    ("2018-02-01", "Feb–Mar 2018"),
+    ("2018-03-31", "Feb–Mar 2018"),
+    ("2018-04-01", "Apr–Jul 2018"),
+    ("2018-07-31", "Apr–Jul 2018"),
+    ("2018-08-01", None),
+])
+def test_route_stages_use_inclusive_purchase_period_boundaries(purchase_date, expected_period):
+    items, orders, routes = stage_fixture()
+    b = orders.order_id.eq("B")
+    shift = pd.Timestamp(purchase_date) - orders.loc[b, "order_purchase_timestamp"].iloc[0].normalize()
+    for column in ("order_purchase_timestamp", "order_approved_at",
+                   "order_delivered_carrier_date", "order_delivered_customer_date",
+                   "order_estimated_delivery_date"):
+        orders.loc[b, column] += shift
+    result = compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                            investigate_delivery_stages(orders), ("SP", "RJ"))
+    counts = result["coverage"].set_index("period")["other_to_destination"].to_dict()
+    assert counts == {
+        "Nov–Dec 2017": 1 + (expected_period == "Nov–Dec 2017"),
+        "Feb–Mar 2018": 1 + (expected_period == "Feb–Mar 2018"),
+        "Apr–Jul 2018": int(expected_period == "Apr–Jul 2018"),
+    }
+    assert sum(counts.values()) == 2 + int(expected_period is not None)
+
+
+def test_route_stages_calculate_p75_from_order_values():
+    items, orders, routes = stage_fixture()
+    for new_id in ("F", "G"):
+        extra_order = orders.loc[orders.order_id.eq("C")].copy()
+        extra_order["order_id"] = new_id
+        orders = pd.concat([orders, extra_order], ignore_index=True)
+        extra_item = items.loc[items.order_id.eq("C")].copy()
+        extra_item["order_id"] = new_id
+        items = pd.concat([items, extra_item], ignore_index=True)
+        extra_route = routes.loc[routes.order_id.eq("C")].copy()
+        extra_route["order_id"] = new_id
+        routes = pd.concat([routes, extra_route], ignore_index=True)
+    profiles = investigate_delivery_stages(orders)
+    for order_id, hours, promised in zip("BCFG", (0, 10, 20, 40), (1, 2, 4, 8)):
+        processing = (profiles["records"].order_id.eq(order_id)
+                      & profiles["records"].stage.eq("Processing"))
+        profiles["records"].loc[processing, ["calendar_hours", "eligible_hours"]] = hours
+        profiles["windows"].loc[profiles["windows"].order_id.eq(order_id), "promised_days"] = promised
+    result = compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                            profiles, ("SP", "RJ"))
+    group = "Other inter-state to RJ"
+    stage = result["stages"].query("period == 'Nov–Dec 2017' and group == @group "
+                                    "and approval_slot == @SLOT_LABELS[2] and stage == 'Processing'").iloc[0]
+    promise = result["promises"].query("period == 'Nov–Dec 2017' and group == @group "
+                                        "and approval_slot == @SLOT_LABELS[2]").iloc[0]
+    assert (stage["orders"], stage["valid_intervals"]) == (4, 4)
+    assert stage["median_calendar_hours"] == pytest.approx(15)
+    assert stage["p75_calendar_hours"] == pytest.approx(25)
+    assert promise["median_days"] == pytest.approx(3)
+    assert promise["p75_days"] == pytest.approx(5)
+
+
+def test_afternoon_evidence_joins_matching_period_group_and_slot():
+    items, orders, routes = stage_fixture()
+    result = compare_route_delivery_stages(items, orders, routes, orders.loc[orders.order_id.eq("A")],
+                                            investigate_delivery_stages(orders), ("SP", "RJ"))
+    evidence = summarize_afternoon_route_evidence(result)
+    assert len(evidence) == 6
+    pair = evidence.query("period == 'Nov–Dec 2017' and group == 'SP → RJ'").iloc[0]
+    other = evidence.query("period == 'Nov–Dec 2017' and group == 'Other inter-state to RJ'").iloc[0]
+    assert (pair["orders"], pair["late_orders"], pair["late_rate_pct"]) == (1, 0, 0)
+    assert (pair["median_processing_hours"], pair["median_transit_hours"],
+            pair["median_promised_days"]) == (24, 24, 3)
+    assert (other["orders"], other["late_orders"], other["late_rate_pct"]) == (2, 2, 100)
+    assert (other["median_processing_hours"], other["median_transit_hours"],
+            other["median_promised_days"]) == (36, 48, 1.5)
+    assert evidence.loc[evidence["period"].eq("Apr–Jul 2018"), "orders"].eq(0).all()
+
+
 def test_period_slot_heatmap_shows_counts_and_undefined_cells():
     rows = []
     for period in ("First", "Second"):
