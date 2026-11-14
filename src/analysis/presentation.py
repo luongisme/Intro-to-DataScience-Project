@@ -5,6 +5,9 @@ from pandas.io.formats.style import Styler
 
 
 _LABELS = {
+    "group": "Group", "selection_reason": "Selection reason",
+    "wilson_lower_pct": "Wilson 95% lower", "wilson_upper_pct": "Wilson 95% upper",
+    "difference_pp": "Night − afternoon (pp)",
     "customer_state": "Customer state", "late_share_pct": "Share of scope late orders",
     "approval_slot": "Approval slot", "late_rate_pct": "Late rate",
     "month": "Purchase month", "year": "Purchase year", "stage": "Stage",
@@ -47,7 +50,7 @@ def format_analysis_table(table: DataFrame) -> Styler:
             formats[column] = lambda value: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[int(value)]
         elif column.endswith("_pct"):
             formats[column] = "{:.2f}%"
-        elif column == "difference_pp_vs_12_18":
+        elif column == "difference_pp_vs_12_18" or column.endswith("_pp"):
             formats[column] = "{:.2f}"
         elif (column.endswith("orders") or column in {
                 "evaluated", "unavailable", "common_months", "valid_intervals",

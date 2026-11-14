@@ -1,0 +1,258 @@
+"""Independent selection, denominator and boundary checks for two-slot comparisons."""
+
+import pandas as pd
+import pytest
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+from src.analysis.orders import SLOT_LABELS
+from src.analysis.slot_comparisons import compare_approval_slot_groups, COMPARISON_SLOTS
+from src.analysis.investigation_plots import plot_slot_group_comparison
+from src.analysis.presentation import format_analysis_table
+
+
+def cohort(specifications, slot, prefix):
+    rows = []
+    for seller, customer, size, late in specifications:
+        for index in range(size):
+            rows.append({
+                "order_id": f"{prefix}-{len(rows)}", "approval_slot": slot,
+                "is_late": index < late, "customer_state": customer,
+                "seller_state": seller, "location_status": "known",
+                "route_type": "Intra-state" if seller == customer else "Inter-state",
+                "seller_group": "Single seller state",
+            })
+    return pd.DataFrame(rows, columns=[
+        "order_id", "approval_slot", "is_late", "customer_state", "seller_state",
+        "location_status", "route_type", "seller_group",
+    ])
+
+
+def test_selection_unites_both_slot_rankings_reference_and_keeps_small_groups():
+    night = cohort([("AA", "RJ", 1000, 90), ("BB", "RJ", 100, 40), ("CC", "RJ", 99, 60),
+                    ("DD", "RJ", 900, 80), ("EE", "RJ", 100, 20), ("SP", "RJ", 1, 0)],
+                   COMPARISON_SLOTS[0], "night")
+    afternoon = cohort([("AA", "RJ", 1000, 70), ("BB", "RJ", 100, 5), ("CC", "RJ", 99, 55),
+                        ("DD", "RJ", 900, 85), ("EE", "RJ", 100, 30), ("SP", "RJ", 1, 0)],
+                       COMPARISON_SLOTS[1], "afternoon")
+    originals = [frame.copy(deep=True) for frame in (night, afternoon)]
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair", top_n=1, rate_top_n=1)
+    reasons = result["selection"].set_index("group")["selection_reason"]
+    assert set(reasons.index) == {"AA → RJ", "BB → RJ", "DD → RJ", "EE → RJ", "SP → RJ"}
+    assert "Top late count: 00:00–06:00" in reasons["AA → RJ"]
+    assert "Top late count: 12:00–18:00" in reasons["DD → RJ"]
+    assert "Top late rate" in reasons["BB → RJ"]
+    assert "Largest absolute gap" in reasons["BB → RJ"]
+    assert "Reference state pair" in reasons["SP → RJ"]
+    small = result["all_groups"].loc[result["all_groups"]["group"].eq("CC → RJ")]
+    assert small["orders"].tolist() == [99, 99]
+    remaining = result["plot_data"].loc[result["plot_data"]["group"].eq("Other eligible pairs")]
+    assert remaining["orders"].tolist() == [99, 99]
+    assert remaining["late_orders"].tolist() == [60, 55]
+    full = result["all_groups"]
+    assert full.loc[full["group"].eq("BB → RJ"), "difference_pp"].tolist() == [35, 35]
+    for frame, original in zip((night, afternoon), originals):
+        pd.testing.assert_frame_equal(frame, original)
+    shuffled = compare_approval_slot_groups(night.sample(frac=1, random_state=8),
+                                            afternoon.sample(frac=1, random_state=9),
+                                            group_by="state_pair", top_n=1, rate_top_n=1)
+    for key in result:
+        pd.testing.assert_frame_equal(result[key], shuffled[key])
+
+
+def test_count_leaders_can_have_less_than_minimum_rate_ranking_size():
+    night = cohort([("AA", "RJ", 50, 30), ("BB", "RJ", 100, 2)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("BB", "RJ", 100, 1)], COMPARISON_SLOTS[1], "a")
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair",
+                                          top_n=1, rate_top_n=1, reference_pair=None)
+    reason = result["selection"].set_index("group").loc["AA → RJ", "selection_reason"]
+    assert "Top late count" in reason and "Top late rate" not in reason
+    absent = result["selected"].loc[result["selected"]["group"].eq("AA → RJ")
+                                   & result["selected"]["approval_slot"].eq(COMPARISON_SLOTS[1])].iloc[0]
+    assert absent["orders"] == absent["late_orders"] == 0
+    assert pd.isna(absent["late_rate_pct"]) and pd.isna(absent["difference_pp"])
+    assert pd.isna(absent["wilson_lower_pct"]) and pd.isna(absent["wilson_upper_pct"])
+
+
+def test_tie_breaks_use_counts_sizes_codes_and_unrounded_rates():
+    specs = [("AA", "RJ", 100, 10), ("BB", "RJ", 100, 10), ("CC", "RJ", 100, 10)]
+    night = cohort(specs, COMPARISON_SLOTS[0], "n")
+    afternoon = cohort(specs, COMPARISON_SLOTS[1], "a")
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair",
+                                          top_n=1, rate_top_n=1, reference_pair=None)
+    assert result["selection"]["group"].tolist() == ["AA → RJ"]
+    assert "Largest absolute gap" not in result["selection"].iloc[0]["selection_reason"]
+    specs = [("AA", "RJ", 1001, 1), ("ZZ", "RJ", 1000, 1)]
+    result = compare_approval_slot_groups(cohort(specs, COMPARISON_SLOTS[0], "n"),
+                                          cohort(specs, COMPARISON_SLOTS[1], "a"),
+                                          group_by="state_pair", top_n=1, rate_top_n=1, reference_pair=None)
+    reasons = result["selection"].set_index("group")["selection_reason"]
+    assert "Top late count" in reasons["AA → RJ"]
+    assert "Top late rate" in reasons["ZZ → RJ"]
+    assert "Top late rate" not in reasons["AA → RJ"]
+
+
+def test_largest_absolute_gap_uses_pooled_size_then_code_and_keeps_sign():
+    night = cohort([("AA", "RJ", 100, 10), ("BB", "RJ", 200, 40), ("CC", "RJ", 200, 20)],
+                   COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("AA", "RJ", 100, 20), ("BB", "RJ", 200, 20), ("CC", "RJ", 200, 40)],
+                       COMPARISON_SLOTS[1], "a")
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair",
+                                          top_n=1, rate_top_n=1, reference_pair=None)
+    reasons = result["selection"].set_index("group")["selection_reason"]
+    assert "Largest absolute gap" in reasons["BB → RJ"]
+    assert all("Largest absolute gap" not in value for key, value in reasons.items() if key != "BB → RJ")
+    differences = result["all_groups"].groupby("group")["difference_pp"].first()
+    assert differences["AA → RJ"] == -10
+    assert differences["BB → RJ"] == 10
+
+
+@pytest.mark.parametrize("group_by", ["customer_state", "state_pair"])
+def test_scope_totals_include_unresolved_and_multi_state_orders(group_by):
+    night = cohort([("SP", "RJ", 2, 1), ("SP", "SP", 1, 1)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("SP", "RJ", 2, 0)], COMPARISON_SLOTS[1], "a")
+    extra = night.iloc[[0, 0]].copy()
+    extra["order_id"] = ["multi", "review"]
+    extra["seller_group"] = ["Multiple seller states", "Requires review"]
+    extra["seller_state"] = pd.NA
+    extra["customer_state"] = ["RJ", pd.NA]
+    extra["location_status"] = ["known", "missing"]
+    extra["route_type"] = ["Mixed", "Unknown"]
+    extra["is_late"] = [True, False]
+    night = pd.concat([night, extra], ignore_index=True)
+    result = compare_approval_slot_groups(night, afternoon, group_by=group_by)
+    assert result["scope_summary"]["orders"].tolist() == [5, 2]
+    assert result["scope_summary"]["late_orders"].tolist() == [3, 0]
+    for slot, frame in zip(COMPARISON_SLOTS, (night, afternoon)):
+        for key in ("all_groups", "plot_data"):
+            rows = result[key].loc[result[key]["approval_slot"].eq(slot)]
+            assert rows["orders"].sum() == len(frame)
+            assert rows["late_orders"].sum() == int(frame["is_late"].sum())
+            assert rows["order_share_pct"].sum() == pytest.approx(100)
+            if slot == COMPARISON_SLOTS[0]:
+                assert rows["late_share_pct"].sum() == pytest.approx(100)
+            else:
+                assert rows["late_share_pct"].isna().all()
+    if group_by == "state_pair":
+        rows = result["all_groups"].set_index(["group", "approval_slot"])
+        assert rows.loc[("SP → RJ", COMPARISON_SLOTS[0]), "late_share_pct"] == pytest.approx(100 / 3)
+        assert rows.loc[("Multiple seller states", COMPARISON_SLOTS[0]), "orders"] == 1
+
+
+def test_empty_and_zero_late_cohorts_keep_schema_and_undefined_rates():
+    empty_night = cohort([], COMPARISON_SLOTS[0], "n")
+    empty_afternoon = cohort([], COMPARISON_SLOTS[1], "a")
+    for group_by in ("customer_state", "state_pair"):
+        result = compare_approval_slot_groups(empty_night, empty_afternoon, group_by=group_by)
+        assert result["selected"].empty and result["selection"].empty
+        assert result["all_groups"]["orders"].eq(0).all()
+        assert result["all_groups"][["late_rate_pct", "difference_pp", "wilson_upper_pct",
+                                     "order_share_pct", "late_share_pct"]].isna().all().all()
+    night = cohort([("MG", "SP", 100, 0)], COMPARISON_SLOTS[0], "n")
+    result = compare_approval_slot_groups(night, empty_afternoon, group_by="state_pair", reference_pair=None)
+    assert result["selection"].empty
+    observed = result["all_groups"].loc[result["all_groups"]["orders"].gt(0)].iloc[0]
+    assert observed["late_rate_pct"] == 0 and observed["wilson_upper_pct"] > 0
+
+
+def test_wilson_limits_match_independent_known_binomial_values():
+    night = cohort([("SP", "RJ", 100, 10)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("SP", "RJ", 100, 100)], COMPARISON_SLOTS[1], "a")
+    table = compare_approval_slot_groups(night, afternoon, group_by="customer_state")["selected"]
+    assert table.iloc[0]["wilson_lower_pct"] == pytest.approx(5.5229137060)
+    assert table.iloc[0]["wilson_upper_pct"] == pytest.approx(17.4365696341)
+    assert table.iloc[1]["wilson_upper_pct"] == pytest.approx(100)
+
+
+@pytest.mark.parametrize("defect,message", [
+    ("duplicate", "one row per non-null"), ("null_id", "one row per non-null"),
+    ("wrong_slot", "must belong"), ("overlap", "disjoint"), ("outcome", "binary"),
+    ("blank_customer", "nonblank"), ("pair_route", "conflict"), ("missing_column", "Missing"),
+])
+def test_invalid_cohorts_are_rejected(defect, message):
+    night = cohort([("SP", "RJ", 2, 1)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("SP", "RJ", 2, 1)], COMPARISON_SLOTS[1], "a")
+    if defect == "duplicate": night = pd.concat([night, night.iloc[:1]], ignore_index=True)
+    elif defect == "null_id": night.loc[0, "order_id"] = pd.NA
+    elif defect == "wrong_slot": night.loc[0, "approval_slot"] = SLOT_LABELS[1]
+    elif defect == "overlap": afternoon.loc[0, "order_id"] = night.loc[0, "order_id"]
+    elif defect == "outcome": night["is_late"] = "True"
+    elif defect == "blank_customer": night.loc[0, "customer_state"] = " "
+    elif defect == "pair_route": night.loc[0, "route_type"] = "Intra-state"
+    else: night = night.drop(columns="seller_group")
+    with pytest.raises(ValueError, match=message):
+        compare_approval_slot_groups(night, afternoon, group_by="state_pair")
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"top_n": 0}, {"rate_top_n": True}, {"min_orders": 0}, {"min_orders": 1.5},
+    {"group_by": "route"}, {"reference_pair": ("SP", "")},
+])
+def test_selection_options_are_validated(kwargs):
+    night = cohort([], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([], COMPARISON_SLOTS[1], "a")
+    options = {"group_by": "customer_state", **kwargs}
+    with pytest.raises(ValueError):
+        compare_approval_slot_groups(night, afternoon, **options)
+
+
+def test_comparison_figures_and_display_preserve_counts_and_units():
+    night = cohort([("SP", "RJ", 100, 10)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([], COMPARISON_SLOTS[1], "a")
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair")
+    table = result["plot_data"]
+    before = table.copy(deep=True)
+    figure = plot_slot_group_comparison(table, "state_pair")
+    try:
+        figure.canvas.draw()
+        assert figure.axes[0].patches[0].get_width() == 10
+        assert any(text.get_text() == "No orders" for text in figure.axes[1].texts)
+        assert "95% Wilson" in figure.axes[1].get_title()
+    finally:
+        plt.close(figure)
+    pd.testing.assert_frame_equal(table, before)
+    empty_result = compare_approval_slot_groups(
+        night.iloc[:0], afternoon, group_by="state_pair", reference_pair=None,
+    )
+    empty_figure = plot_slot_group_comparison(empty_result["plot_data"], "state_pair")
+    try:
+        empty_figure.canvas.draw()
+        assert all(patch.get_width() == 0 for patch in empty_figure.axes[0].patches)
+    finally:
+        plt.close(empty_figure)
+    html = format_analysis_table(result["selected"]).to_html()
+    assert "Night − afternoon (pp)" in html and "Wilson 95% lower" in html
+    malformed = table.copy()
+    malformed.loc[0, "late_rate_pct"] = 99
+    with pytest.raises(ValueError, match="matching order counts"):
+        plot_slot_group_comparison(malformed, "state_pair")
+    with pytest.raises(ValueError, match="one row"):
+        plot_slot_group_comparison(pd.concat([table, table.iloc[:1]]), "state_pair")
+
+def test_pooled_remainder_uses_order_counts_instead_of_average_group_rates():
+    night = cohort([("AA", "RJ", 100, 20), ("BB", "RJ", 1, 1), ("CC", "RJ", 2, 0)],
+                   COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("AA", "RJ", 100, 10), ("BB", "RJ", 1, 0), ("CC", "RJ", 2, 0)],
+                       COMPARISON_SLOTS[1], "a")
+    result = compare_approval_slot_groups(night, afternoon, group_by="state_pair",
+                                          top_n=1, rate_top_n=1, reference_pair=None)
+    remaining = result["plot_data"].loc[result["plot_data"]["group"].eq("Other eligible pairs")]
+    assert remaining["orders"].tolist() == [3, 3]
+    assert remaining["late_orders"].tolist() == [1, 0]
+    assert remaining.iloc[0]["late_rate_pct"] == pytest.approx(100 / 3)
+    assert remaining.iloc[0]["late_rate_pct"] != pytest.approx(50)
+
+
+@pytest.mark.parametrize("group_by", ["customer_state", "state_pair"])
+def test_group_state_whitespace_is_normalized_without_changing_inputs(group_by):
+    night = cohort([("SP", "RJ", 5, 1)], COMPARISON_SLOTS[0], "n")
+    afternoon = cohort([("SP", "RJ", 7, 2)], COMPARISON_SLOTS[1], "a")
+    expected = compare_approval_slot_groups(night, afternoon, group_by=group_by)
+    night["seller_state"] = " SP "
+    night["customer_state"] = " RJ "
+    before = night.copy(deep=True)
+    actual = compare_approval_slot_groups(night, afternoon, group_by=group_by)
+    for key in expected:
+        pd.testing.assert_frame_equal(expected[key], actual[key])
+    pd.testing.assert_frame_equal(night, before)

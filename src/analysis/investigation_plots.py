@@ -11,6 +11,77 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_slot_group_comparison(table, group_by):
+    """Compare counts and 95% Wilson rate intervals for complete two-slot plot rows."""
+    from .slot_comparisons import COMPARISON_SLOTS
+    from .statistics import _wilson_interval
+
+    if group_by not in ("customer_state", "state_pair"):
+        raise ValueError("group_by must be customer_state or state_pair.")
+    required = {"group", "approval_slot", "orders", "late_orders", "late_rate_pct",
+                "wilson_lower_pct", "wilson_upper_pct"}
+    if required.difference(table.columns):
+        raise ValueError("Comparison figures require group-slot counts, rates and Wilson limits.")
+    if table["group"].isna().any() or table.duplicated(["group", "approval_slot"]).any():
+        raise ValueError("Each comparison group and approval slot requires one row.")
+    groups = table["group"].drop_duplicates().tolist()
+    if not groups or set(table["approval_slot"]) != set(COMPARISON_SLOTS):
+        raise ValueError("Comparison figures require both approval slots.")
+    grid = pd.MultiIndex.from_product([groups, COMPARISON_SLOTS], names=["group", "approval_slot"])
+    rows = table.set_index(["group", "approval_slot"]).reindex(grid)
+    counts = rows[["orders", "late_orders"]].to_numpy(dtype=float)
+    if (not np.isfinite(counts).all() or (counts < 0).any()
+            or (counts != np.floor(counts)).any()
+            or rows["late_orders"].gt(rows["orders"]).any()):
+        raise ValueError("Every group requires both slots and valid nonnegative integer counts.")
+    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    lower, upper = _wilson_interval(rows["late_orders"], rows["orders"])
+    for column, values in (("late_rate_pct", expected), ("wilson_lower_pct", lower), ("wilson_upper_pct", upper)):
+        if not np.isclose(rows[column].to_numpy(dtype=float),
+                          values.to_numpy(dtype=float), equal_nan=True).all():
+            raise ValueError("Rates and Wilson limits must use the matching order counts.")
+
+    figure, axes = plt.subplots(1, 2, figsize=(14, max(5.4, .58 * len(groups) + 2.1)),
+                                sharey=True, layout="constrained")
+    positions = np.arange(len(groups))
+    colors = ("#377eb8", "#388443")
+    for offset, slot, color in zip((-.18, .18), COMPARISON_SLOTS, colors):
+        values = rows.xs(slot, level="approval_slot").reindex(groups)
+        y = positions + offset
+        axes[0].barh(y, values["late_orders"], height=.32, color=color, label=slot)
+        for row, position in zip(values.itertuples(), y):
+            axes[0].annotate(f"{int(row.late_orders):,} / {int(row.orders):,}",
+                             (row.late_orders, position), xytext=(4, 0),
+                             textcoords="offset points", va="center", fontsize=8)
+        available = values["orders"].gt(0)
+        rates = values.loc[available, "late_rate_pct"].to_numpy(dtype=float)
+        low = values.loc[available, "wilson_lower_pct"].to_numpy(dtype=float)
+        high = values.loc[available, "wilson_upper_pct"].to_numpy(dtype=float)
+        axes[1].errorbar(rates, y[available.to_numpy()],
+                         xerr=np.maximum(0, np.array([rates - low, high - rates])),
+                         fmt="o", color=color, capsize=3, markersize=4, linewidth=1.2)
+        for position in y[~available.to_numpy()]:
+            axes[1].annotate("No orders", (0, position), xytext=(3, 0),
+                             textcoords="offset points", va="center", color=color, fontsize=8)
+    axes[0].set_yticks(positions, groups)
+    axes[0].set_ylim(len(groups) - .55, -1.15)
+    axes[0].set_xlim(0, max(1, rows["late_orders"].max()) * 1.65)
+    axes[0].set_title("Late order counts")
+    axes[0].set_xlabel("Late orders · labels show late / all orders")
+    axes[0].legend(loc="upper right", ncol=2, frameon=False, fontsize=9)
+    largest = rows["wilson_upper_pct"].max(skipna=True)
+    axes[1].set_xlim(0, max(1, largest if pd.notna(largest) else 0) * 1.12)
+    axes[1].set_title("Late rates and 95% Wilson intervals")
+    axes[1].set_xlabel("Late deliveries / group orders (%)")
+    for ax in axes:
+        ax.grid(axis="x", alpha=.2)
+        ax.set_axisbelow(True)
+    subject = "customer state" if group_by == "customer_state" else "seller → customer state pair"
+    figure.suptitle(f"Overnight and afternoon deliveries by {subject}")
+    figure.supxlabel("Other groups are pooled from counts; unresolved orders remain separate. No orders = undefined rate.")
+    return figure
+
+
 def plot_focus_routes(routes, approval_slot):
     """Show complete route counts and within-route late rates in one approval slot."""
     from .investigation import ROUTE_LABELS

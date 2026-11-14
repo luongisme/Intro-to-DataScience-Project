@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from .orders import SLOT_LABELS
+from .statistics import _wilson_interval
 
 
 def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
@@ -106,14 +107,9 @@ def summarize_state_pair_slots(pair_orders: pd.DataFrame) -> dict[str, pd.DataFr
     ).reindex(slots, fill_value=0).reset_index()
     raw[["orders", "late_orders"]] = raw[["orders", "late_orders"]].astype("int64")
     raw["late_rate_pct"] = 100 * raw["late_orders"] / raw["orders"].replace(0, np.nan)
-    z = 1.959963984540054
-    n = raw["orders"].replace(0, np.nan)
-    proportion = raw["late_orders"] / n
-    center = (proportion + z * z / (2 * n)) / (1 + z * z / n)
-    half_width = (z * np.sqrt(proportion * (1 - proportion) / n + z * z / (4 * n * n))
-                  / (1 + z * z / n))
-    raw["late_rate_95_lower_pct"] = 100 * (center - half_width)
-    raw["late_rate_95_upper_pct"] = 100 * (center + half_width)
+    lower, upper = _wilson_interval(raw["late_orders"], raw["orders"])
+    raw["late_rate_95_lower_pct"] = lower
+    raw["late_rate_95_upper_pct"] = upper
 
     if pair_orders.empty:
         monthly = pd.DataFrame(columns=["purchase_month", "approval_slot", "orders",
