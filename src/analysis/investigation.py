@@ -135,8 +135,18 @@ def summarize_focus_time(inter: pd.DataFrame, leading_pair: tuple[str, str] | No
                    else pd.DataFrame(tables)) for name, tables in results.items()}
 
 
-def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Count inter-state orders by seller and customer state without splitting orders."""
+def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame, *,
+                          include_intra_state: bool = False) -> dict[str, pd.DataFrame]:
+    """Count eligible state pairs while retaining unresolved orders in coverage.
+
+    The default scope is inter-state orders. With include_intra_state=True,
+    coverage retains every focus order, while pairs require one known customer
+    state and one complete seller state consistent with the route type.
+    Shares in the expanded mode use all focus orders, including those outside
+    eligible pairs. The default output columns retain the inter-state contract.
+    """
+    if not isinstance(include_intra_state, bool):
+        raise ValueError("include_intra_state must be a boolean.")
     required_items = {"order_id", "seller_state"}
     required_focus = {"order_id", "customer_state", "location_status", "route_type", "is_late", "items"}
     for frame, required, label in ((items, required_items, "items"),
@@ -146,58 +156,115 @@ def summarize_state_pairs(items: pd.DataFrame, focus: pd.DataFrame) -> dict[str,
             raise ValueError(f"Missing {label} columns: {sorted(missing)}")
     if focus["order_id"].isna().any() or not focus["order_id"].is_unique:
         raise ValueError("State pairs require one row per non-null focus order.")
-    inter = focus.loc[focus["route_type"].eq("Inter-state")].copy()
-    if inter["items"].isna().any():
-        raise ValueError("Reference item counts must be complete for inter-state orders.")
+    scoped = focus.copy() if include_intra_state else focus.loc[focus["route_type"].eq("Inter-state")].copy()
+    scope_label = "focus orders" if include_intra_state else "inter-state orders"
+    if (scoped["is_late"].isna().any()
+            or not scoped["is_late"].isin([False, True]).all()):
+        raise ValueError("Delivery outcome must be known and binary for every scoped order.")
+    if not scoped["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Scoped orders contain an unrecognized route classification.")
+    if not scoped["location_status"].isin(["known", "missing", "incomplete", "conflicting"]).all():
+        raise ValueError("Scoped orders contain an unrecognized location status.")
+    if scoped["items"].isna().any():
+        raise ValueError(f"Reference item counts must be complete for {scope_label}.")
     if "order_item_id" in items.columns:
-        item_keys = items.loc[items["order_id"].isin(inter["order_id"]),
+        item_keys = items.loc[items["order_id"].isin(scoped["order_id"]),
                               ["order_id", "order_item_id"]]
         if item_keys.isna().any().any() or item_keys.duplicated().any():
             raise ValueError("Selected items require unique, non-null (order_id, order_item_id) keys.")
-    selected = items.loc[items["order_id"].isin(inter["order_id"]),
+    selected = items.loc[items["order_id"].isin(scoped["order_id"]),
                          ["order_id", "seller_state"]].copy()
     selected["seller_state"] = selected["seller_state"].astype("string").str.strip().replace("", pd.NA)
     grouped = selected.groupby("order_id", sort=False, observed=True)["seller_state"].agg(
         seller_state_count="nunique", missing_seller_items=lambda states: states.isna().sum(),
         seller_state="first",
     ).reset_index()
-    inter = inter.merge(grouped, on="order_id", how="left", validate="one_to_one")
-    if inter["seller_state_count"].isna().any():
-        raise ValueError("Some inter-state orders have no source items.")
+    scoped = scoped.merge(grouped, on="order_id", how="left", validate="one_to_one")
+    if scoped["seller_state_count"].isna().any():
+        raise ValueError(f"Some {scope_label} have no source items.")
     received = selected.groupby("order_id", observed=True).size()
-    mismatched = inter["order_id"].map(received).ne(inter["items"])
+    mismatched = scoped["order_id"].map(received).ne(scoped["items"])
     if mismatched.any():
-        examples = inter.loc[mismatched, "order_id"].head(5).tolist()
-        raise ValueError(f"Item counts differ for {int(mismatched.sum())} inter-state orders, "
+        examples = scoped.loc[mismatched, "order_id"].head(5).tolist()
+        raise ValueError(f"Item counts differ for {int(mismatched.sum())} {scope_label}, "
                          f"including {examples}. Supply the complete cleaned item table.")
-    known_customer = (inter["location_status"].eq("known")
-                      & inter["customer_state"].astype("string").str.strip().ne("").fillna(False))
-    complete_seller = inter["missing_seller_items"].eq(0)
-    single = known_customer & complete_seller & inter["seller_state_count"].eq(1)
-    multiple = known_customer & complete_seller & inter["seller_state_count"].gt(1)
-    inter["seller_group"] = np.select(
+    customer = scoped["customer_state"].astype("string").str.strip().replace("", pd.NA)
+    known_customer = scoped["location_status"].eq("known") & customer.notna()
+    if (scoped["location_status"].eq("known") & customer.isna()).any():
+        raise ValueError("Known destinations must have a nonblank customer state.")
+    if include_intra_state:
+        scoped["customer_state"] = customer
+        if "customer_state" in items.columns:
+            source_customer = items.loc[items["order_id"].isin(scoped["order_id"]),
+                                        ["order_id", "customer_state"]].copy()
+            source_customer["customer_state"] = (
+                source_customer["customer_state"].astype("string").str.strip().replace("", pd.NA)
+            )
+            expected = scoped.set_index("order_id")["customer_state"]
+            source_customer["matches"] = source_customer["customer_state"].eq(
+                source_customer["order_id"].map(expected)
+            ).fillna(False)
+            consistent = source_customer.groupby("order_id", observed=True)["matches"].all()
+            if (known_customer & ~scoped["order_id"].map(consistent).fillna(False)).any():
+                raise ValueError("Known customer states must match every source item.")
+    complete_seller = scoped["missing_seller_items"].eq(0)
+    single = known_customer & complete_seller & scoped["seller_state_count"].eq(1)
+    multiple = known_customer & complete_seller & scoped["seller_state_count"].gt(1)
+    if include_intra_state:
+        expected_route = np.where(scoped["seller_state"].eq(customer).fillna(False),
+                                  "Intra-state", "Inter-state")
+        if (single & ~scoped["route_type"].eq(expected_route)).any():
+            raise ValueError("The selected pair conflicts with the route classification.")
+    scoped["seller_group"] = np.select(
         [single, multiple], ["Single seller state", "Multiple seller states"],
         default=REVIEW_DESTINATION,
     )
-    inter["seller_state"] = inter["seller_state"].where(single, pd.NA)
+    scoped["seller_state"] = scoped["seller_state"].where(single, pd.NA)
 
     labels = ["Single seller state", "Multiple seller states", REVIEW_DESTINATION]
-    coverage = inter.groupby("seller_group", observed=True).agg(
+    coverage = scoped.groupby("seller_group", observed=True).agg(
         orders=("order_id", "size"), late_orders=("is_late", "sum"),
     ).reindex(labels, fill_value=0).rename_axis("seller_group").reset_index()
-    coverage["late_rate_pct"] = (100 * coverage["late_orders"] /
-                                 coverage["orders"].replace(0, np.nan))
-    pairs = inter.loc[single].groupby(["seller_state", "customer_state"], observed=True).agg(
+    coverage["late_rate_pct"] = 100 * coverage["late_orders"] / coverage["orders"].replace(0, np.nan)
+    pairs = scoped.loc[single].groupby(["seller_state", "customer_state"], observed=True).agg(
         orders=("order_id", "size"), late_orders=("is_late", "sum"),
     ).reset_index()
     pairs["late_rate_pct"] = 100 * pairs["late_orders"] / pairs["orders"]
-    total_late = int(inter["is_late"].sum())
+    total_late = int(scoped["is_late"].sum())
     pairs["late_share_pct"] = 100 * pairs["late_orders"] / total_late if total_late else np.nan
+    if include_intra_state:
+        for table in (coverage, pairs):
+            table["order_share_pct"] = 100 * table["orders"] / len(scoped) if len(scoped) else np.nan
+        coverage["late_share_pct"] = 100 * coverage["late_orders"] / total_late if total_late else np.nan
     pairs = pairs.sort_values(
         ["late_orders", "orders", "seller_state", "customer_state"],
         ascending=[False, False, True, True],
     ).reset_index(drop=True)
-    return {"orders": inter, "coverage": coverage, "pairs": pairs}
+    return {"orders": scoped, "coverage": coverage, "pairs": pairs}
+
+
+def summarize_focus_routes(focus: pd.DataFrame) -> pd.DataFrame:
+    """Describe all route types with shares of the complete focus cohort."""
+    required = {"order_id", "route_type", "is_late"}
+    missing = required.difference(focus.columns)
+    if missing:
+        raise ValueError(f"Missing focus route columns: {sorted(missing)}")
+    if focus["order_id"].isna().any() or not focus["order_id"].is_unique:
+        raise ValueError("Focus routes require one row per non-null order_id.")
+    if not focus["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Focus orders contain an unrecognized route classification.")
+    if focus["is_late"].isna().any() or not focus["is_late"].isin([False, True]).all():
+        raise ValueError("Delivery outcome must be known and binary for every focus order.")
+    table = focus.groupby("route_type", observed=True).agg(
+        orders=("order_id", "size"), late_orders=("is_late", "sum"),
+    ).reindex(ROUTE_LABELS, fill_value=0).rename_axis("route_type").reset_index()
+    table[["orders", "late_orders"]] = table[["orders", "late_orders"]].astype("int64")
+    table["on_time_orders"] = table["orders"] - table["late_orders"]
+    table["late_rate_pct"] = 100 * table["late_orders"] / table["orders"].replace(0, np.nan)
+    table["order_share_pct"] = 100 * table["orders"] / len(focus) if len(focus) else np.nan
+    total_late = int(focus["is_late"].sum())
+    table["late_share_pct"] = 100 * table["late_orders"] / total_late if total_late else np.nan
+    return table
 
 
 def summarize_destination_states(focus: pd.DataFrame) -> dict[str, pd.DataFrame]:

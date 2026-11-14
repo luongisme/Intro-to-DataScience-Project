@@ -11,6 +11,58 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_focus_routes(routes, approval_slot):
+    """Show complete route counts and within-route late rates in one approval slot."""
+    from .investigation import ROUTE_LABELS
+    from .plots import ON_TIME_COLOR, LATE_COLOR
+
+    if approval_slot not in SLOT_LABELS:
+        raise ValueError("A recognized approval slot is required.")
+    required = {"route_type", "orders", "late_orders", "late_rate_pct"}
+    if required.difference(routes.columns):
+        raise ValueError("Route figures require route counts and late rates.")
+    if routes["route_type"].duplicated().any() or set(routes["route_type"]) != set(ROUTE_LABELS):
+        raise ValueError("Route figures require each of the four route types once.")
+    rows = routes.set_index("route_type").reindex(ROUTE_LABELS)
+    counts = rows[["orders", "late_orders"]].to_numpy(dtype=float)
+    if (not np.isfinite(counts).all() or (counts < 0).any()
+            or (counts != np.floor(counts)).any()
+            or rows["late_orders"].gt(rows["orders"]).any()):
+        raise ValueError("Route counts must be nonnegative integers with late orders within totals.")
+    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    if not np.isclose(rows["late_rate_pct"].to_numpy(dtype=float),
+                      expected.to_numpy(dtype=float), equal_nan=True).all():
+        raise ValueError("Late rates must use the matching route order denominators.")
+
+    figure, axes = plt.subplots(1, 2, figsize=(12, 5.1), layout="constrained")
+    positions = np.arange(len(ROUTE_LABELS))
+    on_time = rows["orders"] - rows["late_orders"]
+    axes[0].bar(positions, on_time, color=ON_TIME_COLOR, label="On time")
+    axes[0].bar(positions, rows["late_orders"], bottom=on_time, color=LATE_COLOR, label="Late")
+    axes[0].set_title("Order volume and late deliveries")
+    axes[0].set_ylabel("Orders")
+    axes[0].legend()
+    axes[0].set_ylim(0, max(1, rows["orders"].max()) * 1.27)
+    for position, row in zip(positions, rows.itertuples()):
+        axes[0].annotate(f"N={row.orders:,}\nLate={row.late_orders:,}",
+                         (position, row.orders), xytext=(0, 5), textcoords="offset points",
+                         ha="center", fontsize=9)
+    axes[1].bar(positions, rows["late_rate_pct"].fillna(0), color="#388443")
+    axes[1].set_title("Late deliveries / route orders")
+    axes[1].set_ylabel("Late rate (%)")
+    maximum = rows["late_rate_pct"].max(skipna=True)
+    axes[1].set_ylim(0, max(1, maximum if pd.notna(maximum) else 0) * 1.25)
+    for position, row in zip(positions, rows.itertuples()):
+        label = f"{row.late_rate_pct:.2f}%" if row.orders else "No orders"
+        axes[1].annotate(label, (position, row.late_rate_pct if row.orders else 0),
+                         xytext=(0, 5), textcoords="offset points", ha="center", fontsize=9)
+    for ax in axes:
+        ax.set_xticks(positions, ROUTE_LABELS, rotation=15)
+    figure.suptitle(f"Delivery outcomes by route type · {approval_slot} approvals")
+    figure.supxlabel("N = all orders in each route; each order is counted once")
+    return figure
+
+
 def plot_route_period_slot_rates(outcomes):
     """Show matched late rates with order denominators on a shared color scale."""
     required = {"period", "group", "approval_slot", "orders", "late_orders", "late_rate_pct"}

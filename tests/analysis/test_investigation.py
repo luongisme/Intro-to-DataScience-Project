@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from src.analysis.investigation import (
-    measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
+    summarize_focus_routes, measure_stage_hours, summarize_time_periods, compare_cleaning_cohorts,
     investigate_delivery_stages, classify_order_routes, build_focus_cohort,
     summarize_destination_states, summarize_state_pairs, summarize_focus_time, summarize_focus_comparisons, REVIEW_DESTINATION,
 )
@@ -707,3 +707,192 @@ def test_route_states_use_consistent_whitespace_normalization():
     routes = classify_order_routes(items, orders)
     assert routes.iloc[0]["route_type"] == "Intra-state"
     pd.testing.assert_frame_equal(items, before)
+
+
+def overnight_route_fixture():
+    definitions = [
+        ("inter", [" SP ", "SP"], [" RJ ", "RJ"], True),
+        ("intra", ["SP", "SP"], ["SP", "SP"], False),
+        ("multi", ["SP", "MG"], ["RJ", "RJ"], True),
+        ("mixed", ["SP", "RJ"], ["RJ", "RJ"], False),
+        ("unknown", ["SP", None], ["RJ", "RJ"], True),
+        ("conflict", ["SP", "SP"], ["RJ", "MG"], False),
+        ("other_intra", ["MG"], ["MG"], True),
+    ]
+    rows = []
+    for order_id, sellers, customers, late in definitions:
+        for item_id, (seller, customer) in enumerate(zip(sellers, customers), start=1):
+            rows.append({"order_id": order_id, "order_item_id": item_id,
+                         "seller_state": seller, "customer_state": customer})
+    items = pd.DataFrame(rows)
+    orders = pd.DataFrame({
+        "order_id": [entry[0] for entry in definitions],
+        "approval_slot": [SLOT_LABELS[0]] * len(definitions),
+        "is_late": [entry[3] for entry in definitions],
+        "order_purchase_timestamp": pd.to_datetime(["2018-02-01"] * len(definitions)),
+    })
+    routes = classify_order_routes(items, orders)
+    focus, _ = build_focus_cohort(items, orders, routes, approval_slot=SLOT_LABELS[0])
+    return items, focus
+
+
+def test_focus_route_summary_preserves_all_route_types_and_scope_shares():
+    items, focus = overnight_route_fixture()
+    before = focus.copy(deep=True)
+    table = summarize_focus_routes(focus).set_index("route_type")
+    assert table["orders"].to_dict() == {
+        "Intra-state": 2, "Inter-state": 3, "Mixed": 1, "Unknown": 1,
+    }
+    assert table["late_orders"].to_dict() == {
+        "Intra-state": 1, "Inter-state": 2, "Mixed": 0, "Unknown": 1,
+    }
+    assert table["orders"].sum() == 7
+    assert table["late_orders"].sum() == 4
+    assert table.loc["Inter-state", "late_rate_pct"] == pytest.approx(200 / 3)
+    assert table.loc["Inter-state", "order_share_pct"] == pytest.approx(300 / 7)
+    assert table.loc["Unknown", "late_share_pct"] == 25
+    assert table["order_share_pct"].sum() == pytest.approx(100)
+    assert table["late_share_pct"].sum() == pytest.approx(100)
+    pd.testing.assert_frame_equal(focus, before)
+
+
+def test_expanded_pairs_cover_all_orders_without_splitting_mixed_or_multistate_orders():
+    items, focus = overnight_route_fixture()
+    originals = [frame.copy(deep=True) for frame in (items, focus)]
+    result = summarize_state_pairs(items, focus, include_intra_state=True)
+    coverage = result["coverage"].set_index("seller_group")
+    pairs = result["pairs"].set_index(["seller_state", "customer_state"])
+    assert coverage["orders"].to_dict() == {
+        "Single seller state": 3, "Multiple seller states": 2, REVIEW_DESTINATION: 2,
+    }
+    assert coverage["late_orders"].to_dict() == {
+        "Single seller state": 2, "Multiple seller states": 1, REVIEW_DESTINATION: 1,
+    }
+    assert coverage["orders"].sum() == len(focus)
+    assert coverage["late_share_pct"].sum() == pytest.approx(100)
+    assert pairs["orders"].sum() == 3
+    assert pairs["order_share_pct"].sum() == pytest.approx(300 / 7)
+    assert pairs["late_share_pct"].sum() == pytest.approx(50)
+    assert pairs.loc[("SP", "RJ"), "late_share_pct"] == 25
+    assert pairs.loc[("SP", "SP"), "orders"] == 1
+    assert result["orders"]["order_id"].is_unique
+    by_id = result["orders"].set_index("order_id")
+    assert by_id.loc["mixed", "seller_group"] == "Multiple seller states"
+    assert by_id.loc["unknown", "seller_group"] == REVIEW_DESTINATION
+    assert by_id.loc["conflict", "seller_group"] == REVIEW_DESTINATION
+    assert by_id.loc[["mixed", "unknown", "conflict"], "seller_state"].isna().all()
+    shuffled = summarize_state_pairs(items.sample(frac=1, random_state=7), focus,
+                                      include_intra_state=True)
+    pd.testing.assert_frame_equal(result["pairs"], shuffled["pairs"])
+    for frame, before in zip((items, focus), originals):
+        pd.testing.assert_frame_equal(frame, before)
+
+
+def test_expanded_pairs_preserve_default_interstate_scope_and_columns():
+    items, focus = overnight_route_fixture()
+    default = summarize_state_pairs(items, focus)
+    explicit = summarize_state_pairs(items, focus, include_intra_state=False)
+    for key in default:
+        pd.testing.assert_frame_equal(default[key], explicit[key])
+    assert set(default["orders"]["order_id"]) == {"inter", "multi", "conflict"}
+    assert default["pairs"].columns.tolist() == [
+        "seller_state", "customer_state", "orders", "late_orders", "late_rate_pct", "late_share_pct",
+    ]
+    assert default["coverage"].columns.tolist() == [
+        "seller_group", "orders", "late_orders", "late_rate_pct",
+    ]
+
+
+def test_overnight_summaries_keep_empty_and_zero_late_denominators_explicit():
+    items, focus = overnight_route_fixture()
+    empty = summarize_focus_routes(focus.iloc[:0])
+    assert len(empty) == 4
+    assert empty["orders"].eq(0).all()
+    assert empty[["late_rate_pct", "order_share_pct", "late_share_pct"]].isna().all().all()
+    expanded = summarize_state_pairs(items, focus.iloc[:0], include_intra_state=True)
+    assert expanded["orders"].empty and expanded["pairs"].empty
+    assert len(expanded["coverage"]) == 3
+    assert expanded["coverage"]["orders"].eq(0).all()
+    assert expanded["coverage"][["late_rate_pct", "order_share_pct", "late_share_pct"]].isna().all().all()
+
+    focus["is_late"] = False
+    for table in [summarize_focus_routes(focus),
+                  *[summarize_state_pairs(items, focus, include_intra_state=True)[key]
+                    for key in ("coverage", "pairs")]]:
+        assert table["late_orders"].eq(0).all()
+        assert table["late_share_pct"].isna().all()
+        assert table.loc[table["orders"].gt(0), "late_rate_pct"].eq(0).all()
+    single = summarize_focus_routes(focus.iloc[[0]])
+    assert single.loc[single["orders"].eq(0), "late_rate_pct"].isna().all()
+
+
+@pytest.mark.parametrize("defect", ["partial", "duplicate", "null_key", "wrong_route", "customer_mismatch"])
+def test_expanded_pairs_reject_incomplete_or_inconsistent_intra_state_items(defect):
+    items, focus = overnight_route_fixture()
+    if defect == "partial":
+        items = items.loc[~(items["order_id"].eq("intra") & items["order_item_id"].eq(2))]
+        message = "complete cleaned item table"
+    elif defect in {"duplicate", "null_key"}:
+        items.loc[items["order_id"].eq("intra") & items["order_item_id"].eq(2),
+                  "order_item_id"] = 1 if defect == "duplicate" else pd.NA
+        message = "unique, non-null"
+    elif defect == "wrong_route":
+        focus["route_type"] = focus["route_type"].astype("string")
+        focus.loc[focus["order_id"].eq("intra"), "route_type"] = "Inter-state"
+        message = "conflicts with the route classification"
+    else:
+        items.loc[items["order_id"].eq("intra") & items["order_item_id"].eq(2),
+                  "customer_state"] = "MG"
+        message = "match every source item"
+    with pytest.raises(ValueError, match=message):
+        summarize_state_pairs(items, focus, include_intra_state=True)
+
+
+@pytest.mark.parametrize("defect,message", [
+    ("duplicate", "one row per non-null"),
+    ("null_id", "one row per non-null"),
+    ("route", "unrecognized route"),
+    ("outcome", "known and binary"),
+])
+def test_focus_routes_reject_invalid_order_inputs(defect, message):
+    _, focus = overnight_route_fixture()
+    if defect == "duplicate":
+        focus = pd.concat([focus, focus.iloc[:1]], ignore_index=True)
+    elif defect == "null_id":
+        focus.loc[0, "order_id"] = pd.NA
+    elif defect == "route":
+        focus["route_type"] = focus["route_type"].astype("string")
+        focus.loc[0, "route_type"] = "Other"
+    else:
+        focus["is_late"] = focus["is_late"].astype("object")
+        focus.loc[0, "is_late"] = 2
+    with pytest.raises(ValueError, match=message):
+        summarize_focus_routes(focus)
+
+
+def test_focus_route_figure_shows_full_scope_and_undefined_empty_groups():
+    import matplotlib.pyplot as plt
+    from src.analysis.investigation_plots import plot_focus_routes
+
+    _, focus = overnight_route_fixture()
+    table = summarize_focus_routes(focus)
+    before = table.copy(deep=True)
+    figure = plot_focus_routes(table, SLOT_LABELS[0])
+    try:
+        figure.canvas.draw()
+        assert [p.get_height() for p in figure.axes[0].patches] == [1, 1, 1, 0, 1, 2, 0, 1]
+        assert [p.get_height() for p in figure.axes[1].patches] == pytest.approx([50, 200/3, 0, 100])
+        assert "00:00–06:00" in figure._suptitle.get_text()
+        pd.testing.assert_frame_equal(table, before)
+    finally:
+        plt.close(figure)
+    empty = plot_focus_routes(summarize_focus_routes(focus.iloc[:0]), SLOT_LABELS[0])
+    try:
+        empty.canvas.draw()
+        assert [text.get_text() for text in empty.axes[1].texts] == ["No orders"] * 4
+    finally:
+        plt.close(empty)
+    bad = table.copy()
+    bad.loc[0, "late_rate_pct"] = 99
+    with pytest.raises(ValueError, match="matching route order denominators"):
+        plot_focus_routes(bad, SLOT_LABELS[0])

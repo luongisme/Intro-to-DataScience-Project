@@ -118,3 +118,58 @@ def test_pair_figures_render_from_summary_tables():
     finally:
         for figure in figures:
             plt.close(figure)
+
+
+def test_pair_selection_allows_intra_state_only_with_explicit_option():
+    orders = pd.DataFrame({
+        "order_id": ["intra", "inter"],
+        "approval_slot": [SLOT_LABELS[0]] * 2, "is_late": [False, True],
+        "order_purchase_timestamp": pd.to_datetime(["2018-02-01"] * 2),
+    })
+    items = pd.DataFrame({
+        "order_id": ["intra", "intra", "inter", "inter"], "order_item_id": [1, 2, 1, 2],
+        "seller_state": [" SP ", "SP", "SP", "SP"],
+        "customer_state": ["SP", " SP ", "RJ", "RJ"],
+    })
+    routes = pd.DataFrame({
+        "order_id": orders["order_id"], "route_type": ["Intra-state", "Inter-state"],
+        "items": [2, 2],
+    })
+    originals = [frame.copy(deep=True) for frame in (items, orders, routes)]
+    with pytest.raises(ValueError, match="must be inter-state"):
+        build_state_pair_orders(items, orders, routes, ("SP", "SP"))
+    chosen = build_state_pair_orders(items, orders, routes, (" SP ", "SP"), include_intra_state=True)
+    assert chosen["order_id"].tolist() == ["intra"]
+    legacy = build_state_pair_orders(items, orders, routes, ("SP", "RJ"))
+    expanded = build_state_pair_orders(items, orders, routes, ("SP", "RJ"), include_intra_state=True)
+    pd.testing.assert_frame_equal(legacy, expanded)
+    assert build_state_pair_orders(items, orders, routes, None, include_intra_state=True).empty
+    for frame, before in zip((items, orders, routes), originals):
+        pd.testing.assert_frame_equal(frame, before)
+
+    for defect in ("partial", "duplicate", "wrong_route"):
+        altered = items.copy()
+        altered_routes = routes.copy()
+        if defect == "partial":
+            altered = altered.iloc[1:]
+            message = "complete items"
+        elif defect == "duplicate":
+            altered.loc[1, "order_item_id"] = 1
+            message = "unique, non-null item keys"
+        else:
+            altered_routes.loc[0, "route_type"] = "Inter-state"
+            message = "conflicts with the route classification"
+        with pytest.raises(ValueError, match=message):
+            build_state_pair_orders(altered, orders, altered_routes, ("SP", "SP"),
+                                    include_intra_state=True)
+
+
+@pytest.mark.parametrize("flag", [None, 1, "yes"])
+def test_pair_scope_requires_an_explicit_boolean(flag):
+    from src.analysis.investigation import summarize_state_pairs
+
+    for function, args in [(build_state_pair_orders, (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), None)),
+                           (summarize_state_pairs, (pd.DataFrame(), pd.DataFrame()))]:
+        with pytest.raises(ValueError, match="include_intra_state must be a boolean"):
+            function(*args, include_intra_state=flag)
+

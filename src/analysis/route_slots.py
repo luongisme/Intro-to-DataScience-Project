@@ -8,12 +8,16 @@ from .orders import SLOT_LABELS
 
 def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
                             routes: pd.DataFrame,
-                            state_pair: tuple[str, str] | None) -> pd.DataFrame:
+                            state_pair: tuple[str, str] | None, *,
+                            include_intra_state: bool = False) -> pd.DataFrame:
     """Select orders whose every item belongs to the same known state pair.
 
     Item counts must agree with the existing order-route classification. This
     retains multi-item orders while excluding multi-state seller groups.
+    Intra-state pairs require include_intra_state=True; the default is inter-state.
     """
+    if not isinstance(include_intra_state, bool):
+        raise ValueError("include_intra_state must be a boolean.")
     item_fields = {"order_id", "order_item_id", "seller_state", "customer_state"}
     order_fields = {"order_id", "approval_slot", "is_late", "order_purchase_timestamp"}
     route_fields = {"order_id", "route_type", "items"}
@@ -43,7 +47,7 @@ def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
             or any(not isinstance(state, str) or not state.strip() for state in state_pair)):
         raise ValueError("State pair must contain two nonblank state codes.")
     seller, customer = (state.strip() for state in state_pair)
-    if seller == customer:
+    if seller == customer and not include_intra_state:
         raise ValueError("The selected state pair must be inter-state.")
 
     selected = items.loc[items["order_id"].isin(orders["order_id"]),
@@ -65,7 +69,8 @@ def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
         raise ValueError("Item counts differ from the route classification. Supply complete items.")
     chosen = grouped.index[grouped["all_items_match"]]
     pair = orders.loc[orders["order_id"].isin(chosen)].copy()
-    if not routes.set_index("order_id").loc[pair["order_id"], "route_type"].eq("Inter-state").all():
+    expected_route = "Intra-state" if seller == customer else "Inter-state"
+    if not routes.set_index("order_id").loc[pair["order_id"], "route_type"].eq(expected_route).all():
         raise ValueError("The selected pair conflicts with the route classification.")
     return pair
 
