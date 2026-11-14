@@ -122,6 +122,94 @@ def test_focus_cohort_handles_empty_slot():
     assert pd.isna(diagnostics["summary"].iloc[0]["late_rate_pct"])
 
 
+@pytest.mark.parametrize("slot,expected_ids", [
+    (SLOT_LABELS[0], ["outside"]),
+    (SLOT_LABELS[1], []),
+    (SLOT_LABELS[2], ["known", "conflicting", "missing", "incomplete", "late"]),
+    (SLOT_LABELS[3], []),
+])
+def test_focus_cohort_selects_the_requested_slot_without_mutating_inputs(slot, expected_ids):
+    items, orders, routes = focus_fixture()
+    originals = [frame.copy(deep=True) for frame in (items, orders, routes)]
+    focus, details = build_focus_cohort(items, orders, routes, approval_slot=slot)
+
+    assert focus["order_id"].tolist() == expected_ids
+    summary = details["summary"].iloc[0]
+    assert summary["approval_slot"] == slot
+    assert summary["orders"] == len(expected_ids)
+    assert summary["known_orders"] + summary["review_orders"] == len(expected_ids)
+    if slot == SLOT_LABELS[0]:
+        assert summary["late_orders"] == 1
+        assert summary["late_rate_pct"] == pytest.approx(100)
+        assert focus.iloc[0]["customer_state"] == "RJ"
+        assert focus.iloc[0]["route_type"] == "Inter-state"
+    for frame, original in zip((items, orders, routes), originals):
+        pd.testing.assert_frame_equal(frame, original)
+
+
+def test_focus_cohort_default_matches_explicit_afternoon_and_empty_schema():
+    items, orders, routes = focus_fixture()
+    default, default_details = build_focus_cohort(items, orders, routes)
+    explicit, explicit_details = build_focus_cohort(
+        items, orders, routes, approval_slot=SLOT_LABELS[2],
+    )
+    pd.testing.assert_frame_equal(default, explicit)
+    for name in default_details:
+        pd.testing.assert_frame_equal(default_details[name], explicit_details[name])
+
+    empty, empty_details = build_focus_cohort(
+        items, orders, routes, approval_slot=SLOT_LABELS[1],
+    )
+    assert empty.empty
+    assert empty.columns.tolist() == default.columns.tolist()
+    for name in default_details:
+        assert empty_details[name].columns.tolist() == default_details[name].columns.tolist()
+    assert empty_details["location_review"].empty
+    assert pd.isna(empty_details["summary"].iloc[0]["late_rate_pct"])
+
+
+@pytest.mark.parametrize("slot", [None, "", "00:00-06:00", "06:00–00:00", 0, [], pd.NA])
+def test_focus_cohort_rejects_invalid_slot_labels(slot):
+    items, orders, routes = focus_fixture()
+    with pytest.raises(ValueError, match="approval_slot must be one of"):
+        build_focus_cohort(items, orders, routes, approval_slot=slot)
+
+
+def test_focus_cohort_uses_derived_slots_at_exact_approval_boundaries():
+    from src.analysis.orders import build_order_analysis_view
+
+    clock_times = [
+        "00:00:00", "05:59:59.999999", "06:00:00", "11:59:59.999999",
+        "12:00:00", "17:59:59.999999", "18:00:00", "23:59:59.999999",
+    ]
+    rows = []
+    for index, clock in enumerate(clock_times):
+        for item_id in (1, 2):
+            rows.append({
+                "order_id": f"order-{index}", "order_item_id": item_id,
+                "order_status": "delivered", "customer_state": "RJ", "seller_state": "SP",
+                "order_purchase_timestamp": pd.Timestamp("2018-01-07 12:00"),
+                "order_approved_at": pd.Timestamp(f"2018-01-08 {clock}"),
+                "order_delivered_carrier_date": pd.Timestamp("2018-01-09 12:00"),
+                "order_delivered_customer_date": pd.Timestamp("2018-01-10 12:00"),
+                "order_estimated_delivery_date": pd.Timestamp("2018-01-09"),
+            })
+    items = pd.DataFrame(rows)
+    orders, _ = build_order_analysis_view(items)
+    routes = classify_order_routes(items, orders)
+
+    for slot, expected_ids in [
+        (SLOT_LABELS[0], ["order-0", "order-1"]),
+        (SLOT_LABELS[1], ["order-2", "order-3"]),
+        (SLOT_LABELS[2], ["order-4", "order-5"]),
+        (SLOT_LABELS[3], ["order-6", "order-7"]),
+    ]:
+        focus, details = build_focus_cohort(items, orders, routes, approval_slot=slot)
+        assert focus["order_id"].tolist() == expected_ids
+        assert focus["items"].tolist() == [2, 2]
+        assert details["summary"].iloc[0]["orders"] == 2
+
+
 def test_destination_profiles_reconcile_review_orders_and_scope_denominators():
     focus = pd.DataFrame({
         "order_id": list("ABCDEFG"),

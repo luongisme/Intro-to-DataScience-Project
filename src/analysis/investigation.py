@@ -241,12 +241,16 @@ def summarize_destination_states(focus: pd.DataFrame) -> dict[str, pd.DataFrame]
 
 
 def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
-                       routes: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
-    """Prepare the 12:00–18:00 order cohort with route and destination coverage.
+                       routes: pd.DataFrame, *,
+                       approval_slot: str = SLOT_LABELS[2]) -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
+    """Prepare one approval-slot cohort with route and destination coverage.
 
+    The default approval slot is 12:00–18:00.
     A destination is known only when every item has the same nonblank customer
     state. Missing or conflicting item states remain in the cohort for review.
     """
+    if not isinstance(approval_slot, str) or approval_slot not in SLOT_LABELS:
+        raise ValueError(f"approval_slot must be one of {SLOT_LABELS}.")
     required_items = {"order_id", "customer_state"}
     required_orders = {"order_id", "approval_slot", "is_late"}
     required_routes = {"order_id", "route_type", "items"}
@@ -259,7 +263,7 @@ def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
     if orders["order_id"].isna().any() or orders["order_id"].duplicated().any():
         raise ValueError("Analysis orders must have unique, non-null order_id values.")
 
-    focus = orders.loc[orders["approval_slot"].eq(SLOT_LABELS[2])].copy()
+    focus = orders.loc[orders["approval_slot"].eq(approval_slot)].copy()
     selected = items.loc[items["order_id"].isin(focus["order_id"]),
                          ["order_id", "customer_state"]].copy()
     selected["customer_state"] = selected["customer_state"].astype("string").str.strip().replace("", pd.NA)
@@ -296,7 +300,7 @@ def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
                                               "missing_items", "observed_states"]].reset_index()
     late_orders = int(focus["is_late"].sum())
     summary = pd.DataFrame([{
-        "approval_slot": SLOT_LABELS[2], "orders": len(focus),
+        "approval_slot": approval_slot, "orders": len(focus),
         "on_time_orders": len(focus) - late_orders, "late_orders": late_orders,
         "late_rate_pct": 100 * late_orders / len(focus) if len(focus) else np.nan,
         "known_orders": int(focus["location_status"].eq("known").sum()),
