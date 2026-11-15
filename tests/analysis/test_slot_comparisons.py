@@ -209,6 +209,7 @@ def test_comparison_figures_and_display_preserve_counts_and_units():
         assert figure.axes[0].patches[0].get_width() == 10
         assert any(text.get_text() == "No orders" for text in figure.axes[1].texts)
         assert "95% Wilson" in figure.axes[1].get_title()
+        assert "Delivery outcomes by approval slot" in figure._suptitle.get_text()
     finally:
         plt.close(figure)
     pd.testing.assert_frame_equal(table, before)
@@ -418,3 +419,44 @@ def test_monthly_figures_show_zero_order_gaps_and_keep_full_rate_range():
         assert "No selected groups" in empty_figure.axes[0].texts[0].get_text()
     finally:
         plt.close(empty_figure)
+
+
+@pytest.mark.parametrize("slot", ["unknown", SLOT_LABELS[1], SLOT_LABELS[3], None, pd.NA])
+def test_monthly_figures_reject_unexpected_slots_in_selected_groups(slot):
+    from src.analysis.investigation_plots import plot_slot_group_months
+
+    valid = pd.DataFrame({
+        "group": ["SP"] * 2, "purchase_month": ["2018-01"] * 2,
+        "approval_slot": list(COMPARISON_SLOTS), "orders": [10, 20],
+        "late_orders": [1, 2], "late_rate_pct": [10., 10.],
+    })
+    extra = valid.iloc[[0]].copy()
+    extra["approval_slot"] = slot
+    table = pd.concat([valid, extra], ignore_index=True)
+    before = table.copy(deep=True)
+    with pytest.raises(ValueError, match="recognized overnight and afternoon approval slots"):
+        plot_slot_group_months(table, group_by="customer_state")
+    pd.testing.assert_frame_equal(table, before)
+
+
+def test_monthly_figures_ignore_unselected_groups_with_other_slot_labels():
+    from src.analysis.investigation_plots import plot_slot_group_months
+
+    table = pd.DataFrame({
+        "group": ["SP", "SP", "SP", "SP", "RJ"],
+        "purchase_month": ["2018-01", "2018-01", "2018-02", "2018-02", "2018-01"],
+        "approval_slot": [*COMPARISON_SLOTS, *COMPARISON_SLOTS, "unknown"],
+        "orders": [10, 20, 0, 5, 999], "late_orders": [1, 2, 0, 0, 999],
+        "late_rate_pct": [10., 10., float("nan"), 0., 100.],
+    })
+    before = table.copy(deep=True)
+    figure = plot_slot_group_months(table, group_by="customer_state", groups=["SP"])
+    try:
+        figure.canvas.draw()
+        assert len(figure.axes) == 2
+        assert pd.isna(figure.axes[0].lines[0].get_ydata()[1])
+        assert figure.axes[1].lines[0].get_ydata().tolist() == [10, 0]
+        assert figure.axes[1].lines[1].get_ydata().tolist() == [20, 5]
+    finally:
+        plt.close(figure)
+    pd.testing.assert_frame_equal(table, before)

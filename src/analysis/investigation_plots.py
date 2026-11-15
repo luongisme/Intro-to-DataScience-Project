@@ -33,6 +33,8 @@ def plot_slot_group_months(monthly, *, group_by, groups=None):
         ax.set_axis_off()
         return figure
     selected = monthly.loc[monthly["group"].isin(chosen)]
+    if not selected["approval_slot"].isin(COMPARISON_SLOTS).all():
+        raise ValueError("Selected monthly groups require recognized overnight and afternoon approval slots.")
     months = sorted(selected["purchase_month"].unique())
     dates = pd.PeriodIndex(months, freq="M").to_timestamp()
     grid = pd.MultiIndex.from_product(
@@ -144,7 +146,7 @@ def plot_slot_group_comparison(table, group_by):
         ax.grid(axis="x", alpha=.2)
         ax.set_axisbelow(True)
     subject = "customer state" if group_by == "customer_state" else "seller → customer state pair"
-    figure.suptitle(f"Overnight and afternoon deliveries by {subject}")
+    figure.suptitle(f"Delivery outcomes by approval slot and {subject}")
     figure.supxlabel("Other groups are pooled from counts; unresolved orders remain separate. No orders = undefined rate.")
     return figure
 
