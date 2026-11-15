@@ -449,3 +449,99 @@ def test_intra_state_stage_workflow_compares_slots_within_the_selected_pair():
     assert profiles["promised_summary"].set_index("approval_slot").loc[SLOT_LABELS[0], "median_days"] == 2
     for table, original in zip((items, orders, routes), originals):
         pd.testing.assert_frame_equal(table, original)
+
+
+def evidence_fixture():
+    """Return complete comparison tables for evidence validation tests."""
+    items, orders, routes = stage_fixture()
+    return compare_route_delivery_stages(
+        items, orders, routes, orders.loc[orders.order_id.eq("A")],
+        investigate_delivery_stages(orders), ("SP", "RJ"),
+    )
+
+
+@pytest.mark.parametrize("table,column", [
+    ("outcomes", "orders"), ("outcomes", "late_orders"),
+    ("stages", "orders"), ("promises", "orders"),
+])
+@pytest.mark.parametrize("value", [-1, .5, None, float("inf"), "1", True, 1+0j])
+def test_slot_evidence_rejects_invalid_counts(table, column, value):
+    comparison = evidence_fixture()
+    comparison[table][column] = comparison[table][column].astype(
+        object if isinstance(value, (str, bool, complex)) else float
+    )
+    comparison[table].loc[0, column] = value
+    originals = {name: frame.copy(deep=True) for name, frame in comparison.items()}
+    with pytest.raises(ValueError, match="finite, nonnegative integer counts"):
+        summarize_route_slot_evidence(comparison)
+    for name, original in originals.items():
+        pd.testing.assert_frame_equal(comparison[name], original)
+
+
+def test_slot_evidence_rejects_more_late_orders_than_orders():
+    comparison = evidence_fixture()
+    comparison["outcomes"].loc[0, "late_orders"] = 1
+    with pytest.raises(ValueError, match="Late orders cannot exceed total orders"):
+        summarize_route_slot_evidence(comparison)
+
+
+@pytest.mark.parametrize("value", [999., float("inf"), None, "0", True])
+def test_slot_evidence_rejects_invalid_rates_for_populated_cells(value):
+    comparison = evidence_fixture()
+    outcomes = comparison["outcomes"]
+    mask = (outcomes.period.eq("Nov–Dec 2017") & outcomes.group.eq("SP → RJ")
+            & outcomes.approval_slot.eq(SLOT_LABELS[2]))
+    if isinstance(value, (str, bool)):
+        outcomes["late_rate_pct"] = outcomes["late_rate_pct"].astype(object)
+    outcomes.loc[mask, "late_rate_pct"] = value
+    with pytest.raises(ValueError, match="late rates"):
+        summarize_route_slot_evidence(comparison)
+
+
+@pytest.mark.parametrize("value", [0., 100., float("inf")])
+def test_slot_evidence_requires_undefined_rates_for_zero_orders(value):
+    comparison = evidence_fixture()
+    assert comparison["outcomes"].loc[0, "orders"] == 0
+    comparison["outcomes"].loc[0, "late_rate_pct"] = value
+    with pytest.raises(ValueError, match="zero-order rates must be null"):
+        summarize_route_slot_evidence(comparison)
+
+
+@pytest.mark.parametrize("rate_error,accepted", [(5e-10, True), (1e-4, False)])
+def test_slot_evidence_validates_unrounded_rates_with_float_tolerance(rate_error, accepted):
+    comparison = evidence_fixture()
+    for name in ("outcomes", "stages", "promises"):
+        table = comparison[name]
+        mask = (table.period.eq("Nov–Dec 2017") & table.group.eq("SP → RJ")
+                & table.approval_slot.eq(SLOT_LABELS[2]))
+        table.loc[mask, "orders"] = 3
+        if name == "outcomes":
+            table.loc[mask, "late_orders"] = 1
+            table.loc[mask, "late_rate_pct"] = 100 / 3 + rate_error
+    if accepted:
+        before = {name: table.copy(deep=True) for name, table in comparison.items()}
+        evidence = summarize_route_slot_evidence(comparison)
+        row = evidence.loc[
+            evidence.period.eq("Nov–Dec 2017") & evidence.group.eq("SP → RJ")
+            & evidence.approval_slot.eq(SLOT_LABELS[2])
+        ].iloc[0]
+        assert row.late_rate_pct == 100 / 3 + rate_error
+        for name, original in before.items():
+            pd.testing.assert_frame_equal(comparison[name], original)
+    else:
+        with pytest.raises(ValueError, match="late rates must equal"):
+            summarize_route_slot_evidence(comparison)
+
+
+def test_slot_evidence_accepts_integer_valued_float_and_nullable_counts():
+    comparison = evidence_fixture()
+    expected = summarize_route_slot_evidence(comparison)
+    for name, table in comparison.items():
+        if name not in ("outcomes", "stages", "promises"):
+            continue
+        table["orders"] = table["orders"].astype("Float64")
+        if name == "outcomes":
+            table["late_orders"] = table["late_orders"].astype("Int64")
+            table["late_rate_pct"] = table["late_rate_pct"].astype("Float64")
+    actual = summarize_route_slot_evidence(comparison)
+    pd.testing.assert_frame_equal(actual, expected.astype(actual.dtypes.to_dict()))

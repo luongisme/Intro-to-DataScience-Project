@@ -196,7 +196,10 @@ def summarize_route_slot_evidence(
 
     Inputs are the complete tables returned by compare_route_delivery_stages.
     Keep approval_slot in the result so periods and destination groups remain
-    distinguishable. Empty cells retain zero counts and undefined medians.
+    distinguishable. Counts must be finite nonnegative integers and rates must
+    use their matching counts; zero-order rates remain undefined. Rates are
+    checked before display rounding (rtol=1e-10, atol=1e-9 percentage points).
+    Empty cells retain zero counts and undefined medians.
     """
     if (not isinstance(approval_slots, tuple) or not approval_slots
             or any(slot not in SLOT_LABELS for slot in approval_slots)
@@ -221,6 +224,33 @@ def summarize_route_slot_evidence(
         for name, columns in fields.items()
     }
     outcome, stages, promises = (tables[name] for name in fields)
+    for name, table in tables.items():
+        count_columns = ["orders", "late_orders"] if name == "outcomes" else ["orders"]
+        for column in count_columns:
+            values = table[column]
+            if values.empty:
+                continue
+            if (not pd.api.types.is_numeric_dtype(values)
+                    or pd.api.types.is_bool_dtype(values)
+                    or pd.api.types.is_complex_dtype(values)):
+                raise ValueError(f"{name}.{column} must contain finite, nonnegative integer counts.")
+            numbers = values.to_numpy(dtype=float, na_value=np.nan)
+            if (not np.isfinite(numbers).all() or (numbers < 0).any()
+                    or (numbers != np.floor(numbers)).any()):
+                raise ValueError(f"{name}.{column} must contain finite, nonnegative integer counts.")
+    if outcome["late_orders"].gt(outcome["orders"]).any():
+        raise ValueError("Late orders cannot exceed total orders in outcome evidence.")
+    rates = outcome["late_rate_pct"]
+    if rates.notna().any() and (
+            not pd.api.types.is_numeric_dtype(rates)
+            or pd.api.types.is_bool_dtype(rates)
+            or pd.api.types.is_complex_dtype(rates)):
+        raise ValueError("Outcome late rates must be numeric percentages or null for zero orders.")
+    expected_rates = 100 * outcome["late_orders"] / outcome["orders"].replace(0, np.nan)
+    if not np.isclose(rates.to_numpy(dtype=float, na_value=np.nan),
+                      expected_rates.to_numpy(dtype=float, na_value=np.nan),
+                      rtol=1e-10, atol=1e-9, equal_nan=True).all():
+        raise ValueError("Outcome late rates must equal 100 * late orders / orders; zero-order rates must be null.")
     for name, table in tables.items():
         table_keys = [*keys, "stage"] if name == "stages" else keys
         if table[table_keys].isna().any().any() or table.duplicated(table_keys).any():
