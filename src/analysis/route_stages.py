@@ -188,44 +188,78 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
             "stages": stages, "by_outcome": by_outcome, "promises": promises}
 
 
-def summarize_afternoon_route_evidence(comparison: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Join the afternoon outcomes with recorded stage and promised-window medians."""
-    required = {"outcomes", "stages", "promises"}
-    if not required.issubset(comparison):
-        raise ValueError(f"Missing comparison tables: {sorted(required.difference(comparison))}")
+def summarize_route_slot_evidence(
+    comparison: dict[str, pd.DataFrame], *,
+    approval_slots: tuple[str, ...] = (SLOT_LABELS[0], SLOT_LABELS[2]),
+) -> pd.DataFrame:
+    """Join existing outcome, stage and promise medians for selected approval slots.
+
+    Inputs are the complete tables returned by compare_route_delivery_stages.
+    Keep approval_slot in the result so periods and destination groups remain
+    distinguishable. Empty cells retain zero counts and undefined medians.
+    """
+    if (not isinstance(approval_slots, tuple) or not approval_slots
+            or any(slot not in SLOT_LABELS for slot in approval_slots)
+            or len(set(approval_slots)) != len(approval_slots)):
+        raise ValueError("Approval slots must be a nonempty tuple of distinct recognized labels.")
     keys = ["period", "group", "approval_slot"]
-    outcome = comparison["outcomes"].loc[
-        comparison["outcomes"]["approval_slot"].eq(SLOT_LABELS[2]),
-        [*keys, "orders", "late_orders", "late_rate_pct"],
-    ].copy()
-    stages = comparison["stages"].loc[
-        comparison["stages"]["approval_slot"].eq(SLOT_LABELS[2]),
-        [*keys, "stage", "orders", "median_calendar_hours"],
-    ]
-    promises = comparison["promises"].loc[
-        comparison["promises"]["approval_slot"].eq(SLOT_LABELS[2]),
-        [*keys, "orders", "median_days"],
-    ]
-    if (outcome.duplicated(keys).any() or stages.duplicated([*keys, "stage"]).any()
-            or promises.duplicated(keys).any()):
-        raise ValueError("Afternoon evidence requires unique period and group rows.")
-    if len(stages) != 2 * len(outcome) or not stages["stage"].isin(STAGES).all():
-        raise ValueError("Both delivery stages must cover each afternoon group.")
+    fields = {
+        "outcomes": [*keys, "orders", "late_orders", "late_rate_pct"],
+        "stages": [*keys, "stage", "orders", "median_calendar_hours"],
+        "promises": [*keys, "orders", "median_days"],
+    }
+    for name, columns in fields.items():
+        if name not in comparison:
+            raise ValueError(f"Missing comparison table: {name}.")
+        missing = set(columns).difference(comparison[name].columns)
+        if missing:
+            raise ValueError(f"Missing {name} evidence columns: {sorted(missing)}")
+    tables = {
+        name: comparison[name].loc[
+            comparison[name]["approval_slot"].isin(approval_slots), columns,
+        ].copy()
+        for name, columns in fields.items()
+    }
+    outcome, stages, promises = (tables[name] for name in fields)
+    for name, table in tables.items():
+        table_keys = [*keys, "stage"] if name == "stages" else keys
+        if table[table_keys].isna().any().any() or table.duplicated(table_keys).any():
+            raise ValueError(f"{name} evidence requires unique, non-null comparison keys.")
+    expected_cells = comparison["outcomes"][["period", "group"]].drop_duplicates().merge(
+        pd.DataFrame({"approval_slot": list(approval_slots)}), how="cross",
+    )
+    actual_keys = pd.MultiIndex.from_frame(outcome[keys])
+    expected_keys = pd.MultiIndex.from_frame(expected_cells[keys])
+    if set(actual_keys) != set(expected_keys):
+        raise ValueError("Outcome evidence must cover every requested approval slot.")
+    promise_keys = pd.MultiIndex.from_frame(promises[keys])
+    if set(promise_keys) != set(actual_keys):
+        raise ValueError("Promised windows must cover every requested comparison cell.")
+    expected_stages = expected_cells.merge(pd.DataFrame({"stage": list(STAGES)}), how="cross")
+    if set(pd.MultiIndex.from_frame(stages[[*keys, "stage"]])) != set(
+            pd.MultiIndex.from_frame(expected_stages[[*keys, "stage"]])):
+        raise ValueError("Both delivery stages must cover every requested comparison cell.")
     wide = stages.pivot(index=keys, columns="stage", values="median_calendar_hours")
-    wide = wide.rename(columns={"Processing": "median_processing_hours",
-                                "Carrier transit": "median_transit_hours"}).reset_index()
+    # Reindex columns to preserve the output schema for an empty comparison.
+    wide = wide.reindex(columns=STAGES).rename(columns={
+        "Processing": "median_processing_hours",
+        "Carrier transit": "median_transit_hours",
+    }).reset_index()
     result = outcome.merge(wide, on=keys, how="left", validate="one_to_one")
     result = result.merge(promises.rename(columns={"median_days": "median_promised_days"}),
                           on=keys, how="left", validate="one_to_one", suffixes=("", "_promise"))
-    if len(result) != len(outcome) or result["orders_promise"].isna().any():
-        raise ValueError("Promised windows must cover every afternoon group.")
     if not result["orders"].eq(result["orders_promise"]).all():
-        raise ValueError("Afternoon outcome and promised-window order counts differ.")
+        raise ValueError("Outcome and promised-window order counts differ.")
     stage_counts = stages.merge(outcome[[*keys, "orders"]], on=keys, how="left",
                                 validate="many_to_one", suffixes=("_stage", "_outcome"))
-    if stage_counts["orders_outcome"].isna().any() or not stage_counts["orders_stage"].eq(
-        stage_counts["orders_outcome"]
-    ).all():
-        raise ValueError("Afternoon stage and outcome order counts differ.")
-    return result[["period", "group", "orders", "late_orders", "late_rate_pct",
+    if not stage_counts["orders_stage"].eq(stage_counts["orders_outcome"]).all():
+        raise ValueError("Stage and outcome order counts differ.")
+    return result[[*keys, "orders", "late_orders", "late_rate_pct",
                    "median_processing_hours", "median_transit_hours", "median_promised_days"]]
+
+
+def summarize_afternoon_route_evidence(comparison: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Join afternoon medians while preserving the original compact table schema."""
+    return summarize_route_slot_evidence(
+        comparison, approval_slots=(SLOT_LABELS[2],),
+    ).drop(columns="approval_slot")

@@ -8,7 +8,11 @@ import matplotlib.pyplot as plt
 
 from src.analysis.investigation import investigate_delivery_stages
 from src.analysis.orders import SLOT_LABELS
-from src.analysis.route_stages import compare_route_delivery_stages, summarize_afternoon_route_evidence
+from src.analysis.route_stages import (
+    compare_route_delivery_stages, summarize_afternoon_route_evidence, summarize_route_slot_evidence,
+)
+from src.analysis.route_slots import build_state_pair_orders
+from src.analysis.summary import summarize_delivery_by_slot
 from src.analysis.investigation_plots import plot_route_period_slot_rates
 from src.analysis.presentation import format_analysis_table
 
@@ -314,4 +318,134 @@ def test_route_tables_show_units_scope_and_formatted_counts_without_mutation():
     assert "35.68" in rendered[2]
     assert "30.25" in rendered[3]
     for table, original in zip(tables, originals):
+        pd.testing.assert_frame_equal(table, original)
+
+
+def test_slot_evidence_reuses_night_and_afternoon_cells_without_mutation():
+    items, orders, routes = stage_fixture()
+    comparison = compare_route_delivery_stages(
+        items, orders, routes, orders.loc[orders.order_id.eq("A")],
+        investigate_delivery_stages(orders), ("SP", "RJ"),
+    )
+    originals = {name: table.copy(deep=True) for name, table in comparison.items()}
+    evidence = summarize_route_slot_evidence(comparison)
+    assert len(evidence) == 12
+    assert set(evidence.approval_slot) == {SLOT_LABELS[0], SLOT_LABELS[2]}
+    night = evidence.loc[
+        evidence.period.eq("Feb–Mar 2018") & evidence.group.eq("Other inter-state to RJ")
+        & evidence.approval_slot.eq(SLOT_LABELS[0])
+    ].iloc[0]
+    assert (night.orders, night.late_orders, night.late_rate_pct) == (1, 0, 0)
+    assert (night.median_processing_hours, night.median_transit_hours,
+            night.median_promised_days) == (24, 24, 3)
+    absent = evidence.loc[
+        evidence.period.eq("Feb–Mar 2018") & evidence.group.eq("SP → RJ")
+        & evidence.approval_slot.eq(SLOT_LABELS[0])
+    ].iloc[0]
+    assert absent.orders == 0 and pd.isna(absent.late_rate_pct)
+    assert absent[["median_processing_hours", "median_transit_hours",
+                   "median_promised_days"]].isna().all()
+    afternoon = evidence.loc[evidence.approval_slot.eq(SLOT_LABELS[2])].drop(
+        columns="approval_slot").reset_index(drop=True)
+    pd.testing.assert_frame_equal(afternoon, summarize_afternoon_route_evidence(comparison))
+    for name, original in originals.items():
+        pd.testing.assert_frame_equal(comparison[name], original)
+
+
+@pytest.mark.parametrize("slots", [(), [], ("unknown",), (SLOT_LABELS[0],) * 2])
+def test_slot_evidence_rejects_invalid_slot_selection(slots):
+    with pytest.raises(ValueError, match="distinct recognized labels"):
+        summarize_route_slot_evidence({}, approval_slots=slots)
+
+
+@pytest.mark.parametrize("issue, message", [
+    ("missing_table", "Missing comparison table"),
+    ("missing_column", "Missing stages evidence columns"),
+    ("duplicate_outcome", "unique, non-null"),
+    ("null_key", "unique, non-null"),
+    ("missing_slot", "every requested approval slot"),
+    ("missing_stage", "Both delivery stages"),
+    ("duplicate_stage", "unique, non-null"),
+    ("missing_promise", "Promised windows must cover"),
+    ("extra_stage_cell", "Both delivery stages"),
+    ("stage_count", "Stage and outcome order counts"),
+    ("promise_count", "Outcome and promised-window order counts"),
+])
+def test_slot_evidence_rejects_misaligned_comparison_cells(issue, message):
+    items, orders, routes = stage_fixture()
+    tables = compare_route_delivery_stages(
+        items, orders, routes, orders.loc[orders.order_id.eq("A")],
+        investigate_delivery_stages(orders), ("SP", "RJ"),
+    )
+    if issue == "missing_table":
+        del tables["promises"]
+    elif issue == "missing_column":
+        tables["stages"] = tables["stages"].drop(columns="median_calendar_hours")
+    elif issue == "duplicate_outcome":
+        tables["outcomes"] = pd.concat([tables["outcomes"], tables["outcomes"].iloc[[0]]])
+    elif issue == "null_key":
+        tables["promises"].loc[0, "period"] = None
+    elif issue == "missing_slot":
+        tables["outcomes"] = tables["outcomes"].iloc[1:]
+    elif issue == "missing_stage":
+        tables["stages"] = tables["stages"].iloc[1:]
+    elif issue == "duplicate_stage":
+        tables["stages"] = pd.concat([tables["stages"], tables["stages"].iloc[[0]]])
+    elif issue == "missing_promise":
+        tables["promises"] = tables["promises"].iloc[1:]
+    elif issue == "extra_stage_cell":
+        extra = tables["stages"].iloc[[0]].assign(group="Unmatched destination")
+        tables["stages"] = pd.concat([tables["stages"], extra])
+    elif issue == "stage_count":
+        tables["stages"].loc[0, "orders"] += 1
+    else:
+        tables["promises"].loc[0, "orders"] += 1
+    with pytest.raises(ValueError, match=message):
+        summarize_route_slot_evidence(tables)
+
+
+def test_slot_evidence_preserves_empty_comparison_schema():
+    items, orders, routes = stage_fixture()
+    tables = compare_route_delivery_stages(
+        items, orders, routes, orders.loc[orders.order_id.eq("A")],
+        investigate_delivery_stages(orders), ("SP", "RJ"),
+    )
+    empty = summarize_route_slot_evidence({name: table.iloc[:0] for name, table in tables.items()})
+    assert empty.empty
+    assert empty.columns.tolist() == [
+        "period", "group", "approval_slot", "orders", "late_orders", "late_rate_pct",
+        "median_processing_hours", "median_transit_hours", "median_promised_days",
+    ]
+
+
+def test_intra_state_stage_workflow_compares_slots_within_the_selected_pair():
+    items, orders, routes = stage_fixture()
+    chosen_ids = ["A", "D"]
+    items.loc[items.order_id.isin(chosen_ids), ["seller_state", "customer_state"]] = "SP"
+    routes.loc[routes.order_id.isin(chosen_ids), "route_type"] = "Intra-state"
+    d = orders.order_id.eq("D")
+    orders.loc[d, [
+        "order_purchase_timestamp", "order_approved_at", "order_delivered_carrier_date",
+        "order_delivered_customer_date", "order_estimated_delivery_date",
+    ]] = pd.to_datetime([
+        "2017-11-01 20:00", "2017-11-02 01:00", "2017-11-03 01:00",
+        "2017-11-05 01:00", "2017-11-04 00:00",
+    ])
+    orders.loc[d, "is_late"] = True
+    orders["delay_days"] = [float("nan"), 2., 2., 1., float("nan")]
+    originals = [frame.copy(deep=True) for frame in (items, orders, routes)]
+    pair = build_state_pair_orders(items, orders, routes, ("SP", "SP"), include_intra_state=True)
+    assert set(pair.order_id) == set(chosen_ids)
+    assert len(pair) == 2
+    profiles = investigate_delivery_stages(pair)
+    summary = summarize_delivery_by_slot(pair).set_index("approval_slot")
+    assert summary.loc[SLOT_LABELS[0], ["orders", "late_orders", "late_rate_pct"]].tolist() == [1, 1, 100]
+    assert summary.loc[SLOT_LABELS[2], ["orders", "late_orders", "late_rate_pct"]].tolist() == [1, 0, 0]
+    night_transit = profiles["summary"].loc[
+        profiles["summary"].approval_slot.eq(SLOT_LABELS[0])
+        & profiles["summary"].stage.eq("Carrier transit")
+    ].iloc[0]
+    assert night_transit.evaluated == 1 and night_transit.median_calendar_hours == 48
+    assert profiles["promised_summary"].set_index("approval_slot").loc[SLOT_LABELS[0], "median_days"] == 2
+    for table, original in zip((items, orders, routes), originals):
         pd.testing.assert_frame_equal(table, original)
