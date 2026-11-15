@@ -10,6 +10,7 @@ from src.analysis.investigation import investigate_delivery_stages
 from src.analysis.orders import SLOT_LABELS
 from src.analysis.route_stages import (
     compare_route_delivery_stages, summarize_afternoon_route_evidence, summarize_route_slot_evidence,
+    summarize_stage_slots,
 )
 from src.analysis.route_slots import build_state_pair_orders
 from src.analysis.summary import summarize_delivery_by_slot
@@ -545,3 +546,99 @@ def test_slot_evidence_accepts_integer_valued_float_and_nullable_counts():
             table["late_rate_pct"] = table["late_rate_pct"].astype("Float64")
     actual = summarize_route_slot_evidence(comparison)
     pd.testing.assert_frame_equal(actual, expected.astype(actual.dtypes.to_dict()))
+
+
+def stage_slot_fixture():
+    """Keep unequal outcome subgroup sizes to test whole-cohort quantiles."""
+    rows = []
+    for index, hours in enumerate((0., 10., 20., 40.)):
+        for stage in ("Processing", "Carrier transit"):
+            rows.append({
+                "order_id": f"order-{index}", "approval_slot": SLOT_LABELS[0],
+                "is_late": index == 3, "stage": stage, "status": "valid",
+                "calendar_hours": hours, "eligible_hours": hours / 2,
+            })
+    return pd.DataFrame(rows)
+
+
+def test_whole_slot_stages_use_order_values_and_keep_empty_slots():
+    records = stage_slot_fixture()
+    before = records.copy(deep=True)
+    result = summarize_stage_slots(records, approval_slots=(SLOT_LABELS[0], SLOT_LABELS[2]))
+    assert len(result) == 4
+    populated = result.loc[result.approval_slot.eq(SLOT_LABELS[0])]
+    assert populated.orders.eq(4).all() and populated.valid_intervals.eq(4).all()
+    assert populated.unavailable_intervals.eq(0).all()
+    assert populated.median_calendar_hours.eq(15).all()
+    assert populated.p75_calendar_hours.eq(25).all()
+    assert populated.median_eligible_hours.eq(7.5).all()
+    assert populated.p75_eligible_hours.eq(12.5).all()
+    empty = result.loc[result.approval_slot.eq(SLOT_LABELS[2])]
+    assert empty[["orders", "valid_intervals", "unavailable_intervals"]].eq(0).all().all()
+    assert empty.filter(regex="hours$").isna().all().all()
+    pd.testing.assert_frame_equal(records, before)
+    shuffled = summarize_stage_slots(records.sample(frac=1, random_state=42),
+                                     approval_slots=(SLOT_LABELS[0], SLOT_LABELS[2]))
+    pd.testing.assert_frame_equal(result, shuffled)
+
+
+def test_whole_slot_stages_retain_missing_and_reversed_intervals():
+    records = stage_slot_fixture()
+    for order_id, status in (("order-0", "missing_endpoint"), ("order-1", "reversed")):
+        mask = records.order_id.eq(order_id) & records.stage.eq("Carrier transit")
+        records.loc[mask, ["calendar_hours", "eligible_hours"]] = float("nan")
+        records.loc[mask, "status"] = status
+    result = summarize_stage_slots(records).set_index(["approval_slot", "stage"])
+    transit = result.loc[(SLOT_LABELS[0], "Carrier transit")]
+    assert (transit.orders, transit.valid_intervals, transit.unavailable_intervals) == (4, 2, 2)
+    assert transit.median_calendar_hours == 30 and transit.p75_calendar_hours == 35
+    assert transit.median_eligible_hours == 15 and transit.p75_eligible_hours == 17.5
+    records[["calendar_hours", "eligible_hours"]] = None
+    records["status"] = "missing_endpoint"
+    unavailable = summarize_stage_slots(records)
+    used = unavailable.loc[unavailable.orders.gt(0)]
+    assert used.unavailable_intervals.eq(4).all() and used.valid_intervals.eq(0).all()
+    assert used.filter(regex="hours$").isna().all().all()
+    empty = summarize_stage_slots(records.iloc[:0])
+    assert empty.orders.eq(0).all() and empty.filter(regex="hours$").isna().all().all()
+
+
+@pytest.mark.parametrize("defect", [
+    "duplicate", "null_id", "missing_stage", "split_slot", "unknown_stage",
+    "unknown_slot", "unknown_status", "valid_null", "invalid_value", "negative",
+    "infinite", "excess_eligible",
+])
+def test_whole_slot_stages_reject_invalid_records(defect):
+    records = stage_slot_fixture()
+    if defect == "duplicate":
+        records = pd.concat([records, records.iloc[[0]]], ignore_index=True)
+    elif defect == "null_id":
+        records.loc[0, "order_id"] = None
+    elif defect == "missing_stage":
+        records = records.iloc[1:]
+    elif defect == "split_slot":
+        records.loc[0, "approval_slot"] = SLOT_LABELS[2]
+    elif defect == "unknown_stage":
+        records.loc[0, "stage"] = "Unknown"
+    elif defect == "unknown_slot":
+        records.loc[0, "approval_slot"] = None
+    elif defect == "unknown_status":
+        records.loc[0, "status"] = "Unknown"
+    elif defect == "valid_null":
+        records.loc[0, "calendar_hours"] = float("nan")
+    elif defect == "invalid_value":
+        records.loc[0, "status"] = "reversed"
+    elif defect == "negative":
+        records.loc[0, ["calendar_hours", "eligible_hours"]] = -1
+    elif defect == "infinite":
+        records.loc[0, "calendar_hours"] = float("inf")
+    else:
+        records.loc[0, "eligible_hours"] = 1
+    with pytest.raises(ValueError):
+        summarize_stage_slots(records)
+
+
+@pytest.mark.parametrize("slots", [(), [], ("unknown",), (SLOT_LABELS[0],) * 2])
+def test_whole_slot_stages_reject_invalid_slot_requests(slots):
+    with pytest.raises(ValueError, match="distinct recognized labels"):
+        summarize_stage_slots(stage_slot_fixture(), approval_slots=slots)

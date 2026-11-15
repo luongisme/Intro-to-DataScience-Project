@@ -188,6 +188,65 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
             "stages": stages, "by_outcome": by_outcome, "promises": promises}
 
 
+def summarize_stage_slots(
+    records: pd.DataFrame, *, approval_slots: tuple[str, ...] = SLOT_LABELS,
+) -> pd.DataFrame:
+    """Summarize recorded stages over all orders in each requested approval slot.
+
+    Records come from investigate_delivery_stages. Each order needs both stage
+    rows in one slot. Only valid intervals enter duration statistics; missing
+    and reversed intervals remain in order and unavailable counts. Quantiles
+    use linear interpolation. No month weights or outcome split are applied.
+    """
+    required = {"order_id", "approval_slot", "stage", "status", "calendar_hours", "eligible_hours"}
+    if required.difference(records.columns):
+        raise ValueError("Stage summaries require order, slot, stage, status and duration fields.")
+    if (not isinstance(approval_slots, tuple) or not approval_slots
+            or any(slot not in SLOT_LABELS for slot in approval_slots)
+            or len(set(approval_slots)) != len(approval_slots)):
+        raise ValueError("Approval slots must be distinct recognized labels in a nonempty tuple.")
+    if not records["approval_slot"].isin(SLOT_LABELS).all():
+        raise ValueError("Stage records require recognized, non-null approval slots.")
+    rows = records.loc[records["approval_slot"].isin(approval_slots), sorted(required)].copy()
+    if (rows["order_id"].isna().any() or rows.duplicated(["order_id", "stage"]).any()
+            or not rows["stage"].isin(STAGES).all()):
+        raise ValueError("Stage records require unique, non-null order-stage keys and recognized stages.")
+    groups = rows.groupby("order_id", observed=True)
+    if (groups["stage"].nunique().ne(len(STAGES)).any()
+            or groups["approval_slot"].nunique().ne(1).any()):
+        raise ValueError("Each order must have both stages in one approval slot.")
+    valid = rows["status"].eq("valid")
+    durations = rows[["calendar_hours", "eligible_hours"]]
+    if (not rows["status"].isin(["valid", "missing_endpoint", "reversed"]).all()
+            or durations.loc[valid].isna().any().any()
+            or durations.loc[~valid].notna().any().any()):
+        raise ValueError("Stage status and duration values disagree.")
+    evaluated = durations.loc[valid]
+    if not evaluated.empty:
+        if any(not pd.api.types.is_numeric_dtype(evaluated[c])
+               or pd.api.types.is_bool_dtype(evaluated[c])
+               or pd.api.types.is_complex_dtype(evaluated[c]) for c in evaluated):
+            raise ValueError("Valid stage durations must be finite, nonnegative numeric hours.")
+        numbers = evaluated.to_numpy(dtype=float, na_value=np.nan)
+        if (not np.isfinite(numbers).all() or (numbers < 0).any()
+                or evaluated["eligible_hours"].gt(evaluated["calendar_hours"] + 1e-9).any()):
+            raise ValueError("Valid stage durations must be finite, nonnegative and eligible hours cannot exceed calendar hours.")
+    rows[["calendar_hours", "eligible_hours"]] = durations.to_numpy(dtype=float, na_value=np.nan)
+    grid = pd.MultiIndex.from_product([approval_slots, STAGES], names=["approval_slot", "stage"])
+    result = rows.groupby(["approval_slot", "stage"], observed=True).agg(
+        orders=("order_id", "size"), valid_intervals=("calendar_hours", "count"),
+        median_calendar_hours=("calendar_hours", "median"),
+        p75_calendar_hours=("calendar_hours", lambda values: values.quantile(.75, interpolation="linear")),
+        median_eligible_hours=("eligible_hours", "median"),
+        p75_eligible_hours=("eligible_hours", lambda values: values.quantile(.75, interpolation="linear")),
+    ).reindex(grid).reset_index()
+    result[["orders", "valid_intervals"]] = result[["orders", "valid_intervals"]].fillna(0).astype("int64")
+    result["unavailable_intervals"] = result["orders"] - result["valid_intervals"]
+    return result[["approval_slot", "stage", "orders", "valid_intervals", "unavailable_intervals",
+                   "median_calendar_hours", "p75_calendar_hours",
+                   "median_eligible_hours", "p75_eligible_hours"]]
+
+
 def summarize_route_slot_evidence(
     comparison: dict[str, pd.DataFrame], *,
     approval_slots: tuple[str, ...] = (SLOT_LABELS[0], SLOT_LABELS[2]),
