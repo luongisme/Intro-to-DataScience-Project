@@ -76,6 +76,62 @@ def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
     return pair
 
 
+def _purchase_month_profile(
+    orders: pd.DataFrame, slots: tuple[str, ...], months: pd.PeriodIndex | None = None,
+) -> pd.DataFrame:
+    """Count validated orders on a complete purchase-month × approval-slot grid."""
+    purchase = orders["order_purchase_timestamp"]
+    if months is None:
+        months = (pd.period_range(purchase.min().to_period("M"), purchase.max().to_period("M"), freq="M")
+                  if not orders.empty else pd.PeriodIndex([], freq="M"))
+    if not len(months):
+        return pd.DataFrame(columns=["purchase_month", "approval_slot", "orders",
+                                     "late_orders", "late_rate_pct"])
+    grid = pd.MultiIndex.from_product([months, slots], names=["purchase_month", "approval_slot"])
+    monthly = orders.assign(purchase_month=purchase.dt.to_period("M")).groupby(
+        ["purchase_month", "approval_slot"], observed=True,
+    ).agg(orders=("order_id", "size"), late_orders=("is_late", "sum"))
+    monthly = monthly.reindex(grid, fill_value=0).reset_index()
+    monthly[["orders", "late_orders"]] = monthly[["orders", "late_orders"]].astype("int64")
+    monthly["late_rate_pct"] = 100 * monthly["late_orders"] / monthly["orders"].replace(0, np.nan)
+    monthly["purchase_month"] = monthly["purchase_month"].astype(str)
+    return monthly
+
+
+def _standardize_month_profile(
+    monthly: pd.DataFrame, slots: tuple[str, ...], *, excluded_months: tuple[str, ...] = (),
+) -> dict[str, pd.DataFrame]:
+    """Use pooled order weights in months represented in every requested slot.
+
+    Counts and raw rates retain the full monthly profile. Excluded months only
+    restrict the common-month comparison; they never remove source orders.
+    """
+    sizes = monthly.pivot(index="purchase_month", columns="approval_slot", values="orders").reindex(columns=slots)
+    common = sizes.index[sizes.gt(0).all(axis=1)].difference(list(excluded_months), sort=False)
+    eligible = monthly.loc[monthly["purchase_month"].isin(common)]
+    pooled = eligible.groupby("purchase_month", observed=True)["orders"].sum().astype("int64")
+    weights = pooled / pooled.sum() if not pooled.empty else pooled.astype(float)
+    totals = monthly.groupby("approval_slot", observed=True)[["orders", "late_orders"]].sum().reindex(slots, fill_value=0)
+    records = []
+    for slot in slots:
+        cells = eligible.loc[eligible["approval_slot"].eq(slot)]
+        used = int(cells["orders"].sum())
+        used_late = int(cells["late_orders"].sum())
+        total = int(totals.loc[slot, "orders"])
+        total_late = int(totals.loc[slot, "late_orders"])
+        rate = (cells.set_index("purchase_month")["late_rate_pct"] * weights).sum()
+        records.append({
+            "approval_slot": slot, "common_months": len(common),
+            "included_orders": used, "excluded_orders": total - used,
+            "included_late_orders": used_late, "excluded_late_orders": total_late - used_late,
+            "raw_late_rate_pct": 100 * total_late / total if total else np.nan,
+            "common_raw_late_rate_pct": 100 * used_late / used if used else np.nan,
+            "standardized_late_rate_pct": float(rate) if len(common) else np.nan,
+        })
+    weight_table = pd.DataFrame({"pooled_orders": pooled, "weight": weights}).rename_axis("purchase_month").reset_index()
+    return {"summary": pd.DataFrame(records), "weights": weight_table}
+
+
 def summarize_state_pair_slots(pair_orders: pd.DataFrame) -> dict[str, pd.DataFrame]:
     """Return raw and month-standardized late rates for the four approval slots.
 
@@ -111,45 +167,16 @@ def summarize_state_pair_slots(pair_orders: pd.DataFrame) -> dict[str, pd.DataFr
     raw["late_rate_95_lower_pct"] = lower
     raw["late_rate_95_upper_pct"] = upper
 
-    if pair_orders.empty:
-        monthly = pd.DataFrame(columns=["purchase_month", "approval_slot", "orders",
-                                        "late_orders", "late_rate_pct"])
-        months = pd.PeriodIndex([], freq="M")
-    else:
-        months = pd.period_range(purchase.min().to_period("M"),
-                                 purchase.max().to_period("M"), freq="M")
-        grid = pd.MultiIndex.from_product([months, slots],
-                                          names=["purchase_month", "approval_slot"])
-        monthly = pair_orders.assign(purchase_month=purchase.dt.to_period("M")).groupby(
-            ["purchase_month", "approval_slot"], observed=True,
-        ).agg(orders=("order_id", "size"), late_orders=("is_late", "sum"))
-        monthly = monthly.reindex(grid, fill_value=0).reset_index()
-        monthly[["orders", "late_orders"]] = monthly[["orders", "late_orders"]].astype("int64")
-        monthly["late_rate_pct"] = (100 * monthly["late_orders"] /
-                                    monthly["orders"].replace(0, np.nan))
-        monthly["purchase_month"] = monthly["purchase_month"].astype(str)
-
-    month_counts = monthly.pivot(index="purchase_month", columns="approval_slot",
-                                 values="orders").reindex(columns=slots)
-    common = month_counts.index[month_counts.gt(0).all(axis=1)]
-    endpoints = {str(months[0]), str(months[-1])} if len(months) else set()
+    monthly = _purchase_month_profile(pair_orders, SLOT_LABELS)
+    months = monthly["purchase_month"].drop_duplicates()
+    endpoints = (str(months.iloc[0]), str(months.iloc[-1])) if len(months) else ()
     results = []
-    for scope, included in (("Common months", common),
-                            ("Interior common months", common.difference(list(endpoints), sort=False))):
-        eligible = monthly.loc[monthly["purchase_month"].isin(included)]
-        pooled = eligible.groupby("purchase_month", observed=True)["orders"].sum()
-        weights = pooled / pooled.sum() if not pooled.empty else pooled.astype(float)
-        for row in raw.itertuples(index=False):
-            cells = eligible.loc[eligible["approval_slot"].eq(row.approval_slot)]
-            rate = (cells.set_index("purchase_month")["late_rate_pct"] * weights).sum()
-            used = int(cells["orders"].sum())
-            results.append({
-                "scope": scope, "approval_slot": row.approval_slot,
-                "common_months": len(included), "included_orders": used,
-                "excluded_orders": int(row.orders - used),
-                "raw_late_rate_pct": row.late_rate_pct,
-                "standardized_late_rate_pct": float(rate) if len(included) else np.nan,
-            })
+    columns = ["scope", "approval_slot", "common_months", "included_orders", "excluded_orders",
+               "raw_late_rate_pct", "standardized_late_rate_pct"]
+    for scope, excluded in (("Common months", ()), ("Interior common months", endpoints)):
+        table = _standardize_month_profile(monthly, SLOT_LABELS, excluded_months=excluded)["summary"]
+        table["scope"] = scope
+        results.extend(table[columns].to_dict("records"))
     standardized = pd.DataFrame(results)
     reference = standardized.loc[standardized["approval_slot"].eq(SLOT_LABELS[2]),
                                  ["scope", "standardized_late_rate_pct"]].set_index("scope")

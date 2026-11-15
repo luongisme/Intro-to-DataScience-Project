@@ -256,3 +256,165 @@ def test_group_state_whitespace_is_normalized_without_changing_inputs(group_by):
     for key in expected:
         pd.testing.assert_frame_equal(expected[key], actual[key])
     pd.testing.assert_frame_equal(night, before)
+
+
+def dated_cohort(specifications, slot, prefix):
+    pieces = []
+    for month, seller, customer, size, late in specifications:
+        frame = cohort([(seller, customer, size, late)], slot, f"{prefix}-{month}")
+        frame["order_purchase_timestamp"] = pd.Timestamp(f"{month}-15")
+        # Purchase month is independent of the recorded approval calendar date.
+        frame["order_approved_at"] = pd.Timestamp("2019-01-01 01:00")
+        pieces.append(frame)
+    if pieces:
+        return pd.concat(pieces, ignore_index=True)
+    frame = cohort([], slot, prefix)
+    frame["order_purchase_timestamp"] = pd.Series(dtype="datetime64[ns]")
+    return frame
+
+
+def test_monthly_comparison_separates_exclusion_from_weighting_and_preserves_inputs():
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+
+    night = dated_cohort([
+        ("2018-01", "SP", "RJ", 1, 1), ("2018-02", "SP", "RJ", 3, 0),
+        ("2018-03", "SP", "RJ", 2, 1),
+    ], COMPARISON_SLOTS[0], "n")
+    afternoon = dated_cohort([
+        ("2018-01", "SP", "RJ", 1, 0), ("2018-02", "SP", "RJ", 1, 1),
+        ("2018-04", "SP", "RJ", 2, 1),
+    ], COMPARISON_SLOTS[1], "a")
+    originals = [frame.copy(deep=True) for frame in (night, afternoon)]
+    result = summarize_slot_group_months(night, afternoon, group_by="state_pair")
+    table = result["standardized"].set_index("approval_slot")
+    assert table["common_months"].tolist() == [2, 2]
+    assert table["included_orders"].tolist() == [4, 2]
+    assert table["excluded_orders"].tolist() == [2, 2]
+    assert table["included_late_orders"].tolist() == [1, 1]
+    assert table["excluded_late_orders"].tolist() == [1, 1]
+    assert table["raw_late_rate_pct"].tolist() == pytest.approx([100 / 3, 50])
+    assert table["common_raw_late_rate_pct"].tolist() == pytest.approx([25, 50])
+    assert table["standardized_late_rate_pct"].tolist() == pytest.approx([100 / 3, 200 / 3])
+    assert result["weights"]["weight"].tolist() == pytest.approx([1 / 3, 2 / 3])
+    assert result["weights"]["pooled_orders"].tolist() == [2, 4]
+    assert result["weights"]["weight"].sum() == pytest.approx(1)
+    assert len(result["monthly"]) == 8
+    absent = result["monthly"].query("purchase_month == '2018-03'").iloc[1]
+    assert absent["orders"] == 0 and pd.isna(absent["late_rate_pct"])
+    gaps = result["differences"].iloc[0]
+    assert gaps["raw_difference_pp"] == pytest.approx(-50 / 3)
+    assert gaps["common_raw_difference_pp"] == -25
+    assert gaps["standardized_difference_pp"] == pytest.approx(-100 / 3)
+    for frame, original in zip((night, afternoon), originals):
+        pd.testing.assert_frame_equal(frame, original)
+    shuffled = summarize_slot_group_months(night.sample(frac=1, random_state=5),
+                                           afternoon.sample(frac=1, random_state=7),
+                                           group_by="state_pair")
+    for key in result:
+        pd.testing.assert_frame_equal(result[key], shuffled[key])
+
+
+@pytest.mark.parametrize("group_by", ["customer_state", "state_pair"])
+def test_monthly_groups_use_single_leaders_with_the_existing_selection_rules(group_by):
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+
+    specs = [("SP", "SP", 200, 20), ("SP", "RJ", 100, 30), ("SP", "MA", 100, 15),
+             ("SP", "CE", 50, 1), ("PR", "RS", 150, 5), ("MG", "BA", 101, 6)]
+    night = cohort(specs, COMPARISON_SLOTS[0], "n")
+    afternoon = cohort(specs, COMPARISON_SLOTS[1], "a")
+    for frame in (night, afternoon):
+        frame["order_purchase_timestamp"] = pd.Timestamp("2018-02-01")
+    expected = compare_approval_slot_groups(night, afternoon, group_by=group_by, top_n=1, rate_top_n=1)
+    result = summarize_slot_group_months(night, afternoon, group_by=group_by)
+    pd.testing.assert_frame_equal(expected["selection"], result["selection"])
+    assert len(result["selection"]) <= (5 if group_by == "customer_state" else 6)
+    assert len(result["selection"]) < len(specs)
+
+
+def test_monthly_grid_uses_the_full_cohort_range_even_for_unselected_endpoint_groups():
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+
+    night = dated_cohort([("2018-01", "MG", "SP", 1, 0), ("2018-02", "SP", "RJ", 2, 1)],
+                         COMPARISON_SLOTS[0], "n")
+    afternoon = dated_cohort([("2018-02", "SP", "RJ", 2, 1), ("2018-03", "MG", "SP", 1, 0)],
+                             COMPARISON_SLOTS[1], "a")
+    result = summarize_slot_group_months(night, afternoon, group_by="state_pair")
+    assert result["selection"]["group"].tolist() == ["SP → RJ"]
+    assert result["monthly"]["purchase_month"].unique().tolist() == ["2018-01", "2018-02", "2018-03"]
+    assert result["standardized"]["common_months"].tolist() == [1, 1]
+    assert result["standardized"]["standardized_late_rate_pct"].tolist() == [50, 50]
+    assert result["weights"]["weight"].tolist() == [1]
+
+
+def test_monthly_comparison_handles_disjoint_months_empty_inputs_and_one_empty_slot():
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+
+    night = dated_cohort([("2018-01", "SP", "RJ", 3, 1)], COMPARISON_SLOTS[0], "n")
+    afternoon = dated_cohort([("2018-02", "SP", "RJ", 5, 4)], COMPARISON_SLOTS[1], "a")
+    result = summarize_slot_group_months(night, afternoon, group_by="state_pair")
+    table = result["standardized"]
+    assert table["common_months"].eq(0).all()
+    assert table["included_orders"].eq(0).all()
+    assert table["excluded_orders"].tolist() == [3, 5]
+    assert table["excluded_late_orders"].tolist() == [1, 4]
+    assert table[["common_raw_late_rate_pct", "standardized_late_rate_pct"]].isna().all().all()
+    assert result["weights"].empty
+    empty_n = dated_cohort([], COMPARISON_SLOTS[0], "n")
+    empty_a = dated_cohort([], COMPARISON_SLOTS[1], "a")
+    empty = summarize_slot_group_months(empty_n, empty_a, group_by="state_pair")
+    assert all(table.empty for table in empty.values())
+    one_slot = summarize_slot_group_months(night, empty_a, group_by="state_pair")
+    assert one_slot["standardized"]["raw_late_rate_pct"].iloc[0] == pytest.approx(100 / 3)
+    assert pd.isna(one_slot["standardized"]["raw_late_rate_pct"].iloc[1])
+    assert one_slot["standardized"]["standardized_late_rate_pct"].isna().all()
+
+
+@pytest.mark.parametrize("defect", ["missing", "null", "string"])
+def test_monthly_comparison_requires_valid_purchase_timestamps(defect):
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+
+    night = dated_cohort([("2018-01", "SP", "RJ", 3, 1)], COMPARISON_SLOTS[0], "n")
+    afternoon = dated_cohort([("2018-02", "SP", "RJ", 5, 4)], COMPARISON_SLOTS[1], "a")
+    if defect == "missing":
+        night = night.drop(columns="order_purchase_timestamp")
+    elif defect == "null":
+        night.loc[0, "order_purchase_timestamp"] = pd.NaT
+    else:
+        night["order_purchase_timestamp"] = "2018-01-01"
+    with pytest.raises(ValueError, match="purchase timestamps"):
+        summarize_slot_group_months(night, afternoon, group_by="state_pair")
+
+
+def test_monthly_figures_show_zero_order_gaps_and_keep_full_rate_range():
+    from src.analysis.slot_comparisons import summarize_slot_group_months
+    from src.analysis.investigation_plots import plot_slot_group_months
+
+    night = dated_cohort([("2018-01", "SP", "RJ", 1, 1), ("2018-03", "SP", "RJ", 3, 0)],
+                         COMPARISON_SLOTS[0], "n")
+    afternoon = dated_cohort([("2018-01", "SP", "RJ", 2, 0)], COMPARISON_SLOTS[1], "a")
+    result = summarize_slot_group_months(night, afternoon, group_by="state_pair")
+    table = result["monthly"]
+    before = table.copy(deep=True)
+    figure = plot_slot_group_months(table, group_by="state_pair", groups=["SP → RJ"])
+    try:
+        figure.canvas.draw()
+        rates = figure.axes[0].lines[0].get_ydata()
+        assert rates[0] == 100 and pd.isna(rates[1]) and rates[2] == 0
+        assert figure.axes[0].get_ylim()[1] >= 100
+        assert figure.axes[1].lines[0].get_ydata().tolist() == [1, 0, 3]
+    finally:
+        plt.close(figure)
+    pd.testing.assert_frame_equal(table, before)
+    with pytest.raises(ValueError, match="distinct groups present"):
+        plot_slot_group_months(table, group_by="state_pair", groups=["missing"])
+    bad = table.copy()
+    bad.loc[0, "late_rate_pct"] = 20
+    with pytest.raises(ValueError, match="matching order denominators"):
+        plot_slot_group_months(bad, group_by="state_pair")
+    empty = summarize_slot_group_months(night.iloc[:0], afternoon.iloc[:0], group_by="state_pair")
+    empty_figure = plot_slot_group_months(empty["monthly"], group_by="state_pair")
+    try:
+        empty_figure.canvas.draw()
+        assert "No selected groups" in empty_figure.axes[0].texts[0].get_text()
+    finally:
+        plt.close(empty_figure)

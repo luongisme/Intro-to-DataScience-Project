@@ -5,6 +5,11 @@ from pandas.io.formats.style import Styler
 
 
 _LABELS = {
+    "purchase_month": "Purchase month", "weight": "Pooled month weight",
+    "common_raw_late_rate_pct": "Raw late rate · common months",
+    "raw_difference_pp": "Full-cohort gap (pp)",
+    "common_raw_difference_pp": "Common-month raw gap (pp)",
+    "standardized_difference_pp": "Month-standardized gap (pp)",
     "group": "Group", "selection_reason": "Selection reason",
     "wilson_lower_pct": "Wilson 95% lower", "wilson_upper_pct": "Wilson 95% upper",
     "difference_pp": "Night − afternoon (pp)",
@@ -46,7 +51,9 @@ def format_analysis_table(table: DataFrame) -> Styler:
     """Format order counts, rates and durations without changing the analytical table."""
     formats = {}
     for column in table:
-        if column == "approval_weekday":
+        if column == "weight":
+            formats[column] = "{:.4f}"
+        elif column == "approval_weekday":
             formats[column] = lambda value: ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[int(value)]
         elif column.endswith("_pct"):
             formats[column] = "{:.2f}%"

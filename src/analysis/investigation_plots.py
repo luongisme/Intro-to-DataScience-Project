@@ -11,6 +11,73 @@ from .investigation import REVIEW_DESTINATION
 ELIGIBLE_DAY_NOTE = "Eligible hours count Mon–Fri, excluding 1 Jan, 1 May and 25 Dec (24 hours per full eligible day)."
 
 
+def plot_slot_group_months(monthly, *, group_by, groups=None):
+    """Show full monthly late rates and order volumes for chosen comparison groups."""
+    from .slot_comparisons import COMPARISON_SLOTS
+    from matplotlib.ticker import MaxNLocator
+
+    if group_by not in ("customer_state", "state_pair"):
+        raise ValueError("group_by must be customer_state or state_pair.")
+    required = {"group", "purchase_month", "approval_slot", "orders", "late_orders", "late_rate_pct"}
+    if required.difference(monthly.columns):
+        raise ValueError("Monthly figures require group, purchase month, slot and outcome counts.")
+    if monthly.duplicated(["group", "purchase_month", "approval_slot"]).any():
+        raise ValueError("Monthly figures require unique group-month-slot rows.")
+    available = monthly["group"].drop_duplicates().tolist()
+    chosen = available if groups is None else list(groups)
+    if len(set(chosen)) != len(chosen) or not set(chosen).issubset(available):
+        raise ValueError("Plot groups must be distinct groups present in the monthly table.")
+    if not chosen:
+        figure, ax = plt.subplots(figsize=(10, 3), layout="constrained")
+        ax.text(.5, .5, "No selected groups have monthly observations.", ha="center", va="center")
+        ax.set_axis_off()
+        return figure
+    selected = monthly.loc[monthly["group"].isin(chosen)]
+    months = sorted(selected["purchase_month"].unique())
+    dates = pd.PeriodIndex(months, freq="M").to_timestamp()
+    grid = pd.MultiIndex.from_product(
+        [chosen, months, COMPARISON_SLOTS], names=["group", "purchase_month", "approval_slot"],
+    )
+    rows = selected.set_index(list(grid.names)).reindex(grid)
+    counts = rows[["orders", "late_orders"]].to_numpy(dtype=float)
+    if (not np.isfinite(counts).all() or (counts < 0).any()
+            or (counts != np.floor(counts)).any()
+            or rows["late_orders"].gt(rows["orders"]).any()):
+        raise ValueError("Every plotted group and month requires both slots and valid outcome counts.")
+    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    if not np.isclose(rows["late_rate_pct"].to_numpy(dtype=float),
+                      expected.to_numpy(dtype=float), equal_nan=True).all():
+        raise ValueError("Monthly rates must use the matching order denominators.")
+    figure, axes = plt.subplots(len(chosen), 2, figsize=(14, max(4.2, 3.1 * len(chosen))),
+                                sharex=True, squeeze=False, layout="constrained")
+    colors = ("#377eb8", "#388443")
+    for index, group in enumerate(chosen):
+        for slot, color in zip(COMPARISON_SLOTS, colors):
+            table = rows.xs((group, slot), level=("group", "approval_slot")).reindex(months)
+            axes[index, 0].plot(dates, table["late_rate_pct"], color=color, marker="o",
+                                markersize=3, linewidth=1.2, label=slot)
+            axes[index, 1].plot(dates, table["orders"], color=color, marker="o",
+                                markersize=3, linewidth=1.2, label=slot)
+        axes[index, 0].set_title(f"{group} · late delivery rate")
+        axes[index, 0].set_ylabel("Late rate (%)")
+        axes[index, 1].set_title(f"{group} · order volume")
+        axes[index, 1].set_ylabel("Orders")
+        axes[index, 1].yaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
+        for ax in axes[index]:
+            ax.set_ylim(bottom=0)
+            ax.grid(alpha=.2)
+    axes[0, 0].legend(fontsize=9)
+    import matplotlib.dates as mdates
+    for ax in axes[-1]:
+        ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+        ax.tick_params(axis="x", rotation=35)
+    subject = "customer state" if group_by == "customer_state" else "seller → customer state pair"
+    figure.suptitle(f"Purchase-month patterns by {subject}")
+    figure.supxlabel("Purchase month · approval time determines slot; gaps in a rate series mean no orders")
+    return figure
+
+
 def plot_slot_group_comparison(table, group_by):
     """Compare counts and 95% Wilson rate intervals for complete two-slot plot rows."""
     from .slot_comparisons import COMPARISON_SLOTS

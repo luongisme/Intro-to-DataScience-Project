@@ -173,3 +173,34 @@ def test_pair_scope_requires_an_explicit_boolean(flag):
         with pytest.raises(ValueError, match="include_intra_state must be a boolean"):
             function(*args, include_intra_state=flag)
 
+
+def test_shared_month_helpers_keep_two_slot_and_four_slot_weights_distinct():
+    from src.analysis.route_slots import _purchase_month_profile, _standardize_month_profile
+
+    rows = []
+    for month, slot, count, late in [
+        ("2018-01", 0, 1, 1), ("2018-01", 1, 9, 0),
+        ("2018-01", 2, 1, 0), ("2018-01", 3, 9, 0),
+        ("2018-02", 0, 3, 0), ("2018-02", 1, 1, 0),
+        ("2018-02", 2, 1, 1), ("2018-02", 3, 1, 0),
+    ]:
+        for index in range(count):
+            rows.append({"order_id": f"{month}-{slot}-{index}",
+                         "approval_slot": SLOT_LABELS[slot], "is_late": index < late,
+                         "order_purchase_timestamp": pd.Timestamp(f"{month}-15")})
+    orders = pd.DataFrame(rows)
+    before = orders.copy(deep=True)
+    four = summarize_state_pair_slots(orders)
+    four_weighted = four["standardized"].query("scope == 'Common months'").set_index("approval_slot")
+    assert four_weighted.loc[SLOT_LABELS[0], "standardized_late_rate_pct"] == pytest.approx(100 * 20 / 26)
+    slots = (SLOT_LABELS[0], SLOT_LABELS[2])
+    two_orders = orders.loc[orders["approval_slot"].isin(slots)]
+    profile = _purchase_month_profile(two_orders, slots)
+    two = _standardize_month_profile(profile, slots)
+    assert two["weights"]["pooled_orders"].tolist() == [2, 4]
+    assert two["summary"]["standardized_late_rate_pct"].tolist() == pytest.approx([100 / 3, 200 / 3])
+    interior = _standardize_month_profile(profile, slots, excluded_months=("2018-01",))
+    assert interior["weights"]["weight"].tolist() == [1]
+    assert interior["summary"]["included_orders"].tolist() == [3, 1]
+    assert interior["summary"]["excluded_late_orders"].tolist() == [1, 0]
+    pd.testing.assert_frame_equal(orders, before)
