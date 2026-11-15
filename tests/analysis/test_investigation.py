@@ -896,3 +896,91 @@ def test_focus_route_figure_shows_full_scope_and_undefined_empty_groups():
     bad.loc[0, "late_rate_pct"] = 99
     with pytest.raises(ValueError, match="matching route order denominators"):
         plot_focus_routes(bad, SLOT_LABELS[0])
+
+
+@pytest.mark.parametrize("slot", [SLOT_LABELS[0], SLOT_LABELS[2]])
+@pytest.mark.parametrize("defect", ["duplicate_replacement", "null_key"])
+def test_focus_cohort_rejects_invalid_item_keys_before_destination_assignment(slot, defect):
+    items, orders, routes = focus_fixture()
+    items["order_item_id"] = items.groupby("order_id").cumcount() + 1
+    orders.loc[orders.order_id.eq("conflicting"), "approval_slot"] = slot
+    target = items.index[items.order_id.eq("conflicting")]
+    if defect == "duplicate_replacement":
+        # Preserve row count while replacing the second destination with item 1.
+        items.loc[target[1]] = items.loc[target[0]]
+    else:
+        items.loc[target[1], "order_item_id"] = None
+    originals = [frame.copy(deep=True) for frame in (items, orders, routes)]
+    with pytest.raises(ValueError, match="unique, non-null.*order_item_id"):
+        build_focus_cohort(items, orders, routes, approval_slot=slot)
+    for frame, original in zip((items, orders, routes), originals):
+        pd.testing.assert_frame_equal(frame, original)
+
+
+@pytest.mark.parametrize("value", [None, pd.NA, 2, -1, "1", float("inf")])
+@pytest.mark.parametrize("slot", [SLOT_LABELS[0], SLOT_LABELS[2]])
+def test_focus_cohort_rejects_missing_or_nonbinary_outcomes(value, slot):
+    items, orders, routes = focus_fixture()
+    orders["is_late"] = orders["is_late"].astype(object)
+    target = "outside" if slot == SLOT_LABELS[0] else "late"
+    orders.loc[orders.order_id.eq(target), "is_late"] = value
+    before = orders.copy(deep=True)
+    with pytest.raises(ValueError, match="complete binary delivery outcomes"):
+        build_focus_cohort(items, orders, routes, approval_slot=slot)
+    pd.testing.assert_frame_equal(orders, before)
+
+
+@pytest.mark.parametrize("value", [False, True, 0, 1, 0.0, 1.0])
+def test_focus_cohort_accepts_binary_boolean_and_numeric_outcomes(value):
+    items, orders, routes = focus_fixture()
+    orders["is_late"] = value
+    before = orders.copy(deep=True)
+    focus, diagnostics = build_focus_cohort(items, orders, routes)
+    summary = diagnostics["summary"].iloc[0]
+    assert summary["orders"] == 5
+    assert summary["late_orders"] == 5 * int(value)
+    assert summary["on_time_orders"] == 5 * (1 - int(value))
+    assert summary["late_rate_pct"] == 100 * int(value)
+    pd.testing.assert_frame_equal(orders, before)
+    assert focus["is_late"].dtype == orders["is_late"].dtype
+
+
+def test_focus_cohort_keeps_reduced_item_contract_and_input_frames():
+    items, orders, routes = focus_fixture()
+    keyed = items.assign(order_item_id=items.groupby("order_id").cumcount() + 1)
+    originals = [frame.copy(deep=True) for frame in (items, keyed, orders, routes)]
+    reduced, reduced_details = build_focus_cohort(items, orders, routes)
+    complete, complete_details = build_focus_cohort(keyed, orders, routes)
+    pd.testing.assert_frame_equal(reduced, complete)
+    assert complete.set_index("order_id").loc["conflicting", "location_status"] == "conflicting"
+    for name in reduced_details:
+        pd.testing.assert_frame_equal(reduced_details[name], complete_details[name])
+    for frame, original in zip((items, keyed, orders, routes), originals):
+        pd.testing.assert_frame_equal(frame, original)
+
+
+def test_focus_cohort_still_rejects_partial_items_with_unique_keys():
+    items, orders, routes = focus_fixture()
+    items["order_item_id"] = items.groupby("order_id").cumcount() + 1
+    partial = items.drop(items.index[items.order_id.eq("known")][0])
+    with pytest.raises(ValueError, match="Route item counts differ"):
+        build_focus_cohort(partial, orders, routes)
+
+
+def test_focus_cohort_checks_only_selected_item_keys_and_outcomes():
+    items, orders, routes = focus_fixture()
+    expected, expected_details = build_focus_cohort(items, orders, routes)
+    items["order_item_id"] = items.groupby("order_id").cumcount() + 1
+    outside = items.loc[items.order_id.eq("outside")].copy()
+    outside["order_item_id"] = None
+    items = pd.concat([items, outside], ignore_index=True)
+    orders["is_late"] = orders["is_late"].astype(object)
+    orders.loc[orders.order_id.eq("outside"), "is_late"] = None
+    actual, actual_details = build_focus_cohort(items, orders, routes)
+    # Object dtype is retained from the caller; values and diagnostics agree.
+    pd.testing.assert_frame_equal(actual, expected, check_dtype=False)
+    for name in expected_details:
+        pd.testing.assert_frame_equal(actual_details[name], expected_details[name])
+    empty, details = build_focus_cohort(items, orders, routes, approval_slot=SLOT_LABELS[1])
+    assert empty.empty and details["summary"].iloc[0]["orders"] == 0
+    assert pd.isna(details["summary"].iloc[0]["late_rate_pct"])

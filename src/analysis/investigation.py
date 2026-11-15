@@ -315,6 +315,9 @@ def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
     The default approval slot is 12:00–18:00.
     A destination is known only when every item has the same nonblank customer
     state. Missing or conflicting item states remain in the cohort for review.
+    Selected orders require complete binary outcomes. If order_item_id is
+    available, selected item keys must be complete and unique; reduced item
+    tables without that column retain the route item-count check.
     """
     if not isinstance(approval_slot, str) or approval_slot not in SLOT_LABELS:
         raise ValueError(f"approval_slot must be one of {SLOT_LABELS}.")
@@ -331,6 +334,13 @@ def build_focus_cohort(items: pd.DataFrame, orders: pd.DataFrame,
         raise ValueError("Analysis orders must have unique, non-null order_id values.")
 
     focus = orders.loc[orders["approval_slot"].eq(approval_slot)].copy()
+    if focus["is_late"].isna().any() or not focus["is_late"].isin([False, True]).all():
+        raise ValueError("Focus orders require complete binary delivery outcomes (boolean or numeric 0/1).")
+    if "order_item_id" in items.columns:
+        keys = items.loc[items["order_id"].isin(focus["order_id"]),
+                         ["order_id", "order_item_id"]]
+        if keys.isna().any().any() or keys.duplicated().any():
+            raise ValueError("Focus items require unique, non-null (order_id, order_item_id) keys.")
     selected = items.loc[items["order_id"].isin(focus["order_id"]),
                          ["order_id", "customer_state"]].copy()
     selected["customer_state"] = selected["customer_state"].astype("string").str.strip().replace("", pd.NA)
