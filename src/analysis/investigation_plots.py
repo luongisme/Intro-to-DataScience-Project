@@ -46,7 +46,7 @@ def plot_slot_group_months(monthly, *, group_by, groups=None):
             or (counts != np.floor(counts)).any()
             or rows["late_orders"].gt(rows["orders"]).any()):
         raise ValueError("Every plotted group and month requires both slots and valid outcome counts.")
-    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    expected = 100.0 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
     if not np.isclose(rows["late_rate_pct"].to_numpy(dtype=float),
                       expected.to_numpy(dtype=float), equal_nan=True).all():
         raise ValueError("Monthly rates must use the matching order denominators.")
@@ -103,7 +103,7 @@ def plot_slot_group_comparison(table, group_by):
             or (counts != np.floor(counts)).any()
             or rows["late_orders"].gt(rows["orders"]).any()):
         raise ValueError("Every group requires both slots and valid nonnegative integer counts.")
-    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    expected = 100.0 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
     lower, upper = _wilson_interval(rows["late_orders"], rows["orders"])
     for column, values in (("late_rate_pct", expected), ("wilson_lower_pct", lower), ("wilson_upper_pct", upper)):
         if not np.isclose(rows[column].to_numpy(dtype=float),
@@ -169,7 +169,7 @@ def plot_focus_routes(routes, approval_slot):
             or (counts != np.floor(counts)).any()
             or rows["late_orders"].gt(rows["orders"]).any()):
         raise ValueError("Route counts must be nonnegative integers with late orders within totals.")
-    expected = 100 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
+    expected = 100.0 * rows["late_orders"] / rows["orders"].replace(0, np.nan)
     if not np.isclose(rows["late_rate_pct"].to_numpy(dtype=float),
                       expected.to_numpy(dtype=float), equal_nan=True).all():
         raise ValueError("Late rates must use the matching route order denominators.")

@@ -85,6 +85,34 @@ def test_route_stages_keep_disjoint_orders_and_purchase_periods():
         pd.testing.assert_frame_equal(frame, original)
 
 
+@pytest.mark.parametrize("order_id", ["A", "B"], ids=["target", "comparator"])
+@pytest.mark.parametrize("bad_label", [pd.NA, "Typo"], ids=["null", "unknown-label"])
+def test_pair_and_stage_comparisons_reject_invalid_route_labels(order_id, bad_label):
+    items, orders, routes = stage_fixture()
+    routes["route_type"] = routes["route_type"].astype("string")
+    pair = build_state_pair_orders(items, orders, routes, ("SP", "RJ"))
+    profiles = investigate_delivery_stages(orders)
+    routes.loc[routes.order_id.eq(order_id), "route_type"] = bad_label
+
+    with pytest.raises(ValueError, match="non-null route_type labels"):
+        build_state_pair_orders(items, orders, routes, ("SP", "RJ"))
+    with pytest.raises(ValueError, match="non-null route_type labels"):
+        compare_route_delivery_stages(items, orders, routes, pair, profiles, ("SP", "RJ"))
+
+
+def test_pair_and_stage_comparisons_accept_unknown_route_label():
+    items, orders, routes = stage_fixture()
+    routes.loc[routes.order_id.eq("B"), "route_type"] = "Unknown"
+
+    pair = build_state_pair_orders(items, orders, routes, ("SP", "RJ"))
+    comparison = compare_route_delivery_stages(
+        items, orders, routes, pair, investigate_delivery_stages(orders), ("SP", "RJ"),
+    )
+
+    assert pair["order_id"].tolist() == ["A"]
+    assert comparison["coverage"].iloc[0]["other_to_destination"] == 1
+
+
 def test_route_stages_reject_partial_item_input():
     items, orders, routes = stage_fixture()
     with pytest.raises(ValueError, match="complete cleaned items"):
@@ -532,6 +560,24 @@ def test_slot_evidence_validates_unrounded_rates_with_float_tolerance(rate_error
     else:
         with pytest.raises(ValueError, match="late rates must equal"):
             summarize_route_slot_evidence(comparison)
+
+
+def test_slot_evidence_avoids_overflow_with_narrow_counts():
+    comparison = evidence_fixture()
+    for name in ("outcomes", "stages", "promises"):
+        comparison[name]["orders"] = comparison[name]["orders"].astype("Int8")
+    outcomes = comparison["outcomes"]
+    outcomes["late_orders"] = outcomes["late_orders"].astype("Int8")
+    two_late = outcomes["orders"].eq(2) & outcomes["late_orders"].eq(2)
+    assert two_late.sum() == 1
+
+    evidence = summarize_route_slot_evidence(comparison)
+    assert evidence.loc[evidence["late_orders"].eq(2), "late_rate_pct"].tolist() == [100.0]
+    assert evidence.loc[evidence["orders"].eq(0), "late_rate_pct"].isna().all()
+
+    outcomes.loc[two_late, "late_rate_pct"] = -28.0
+    with pytest.raises(ValueError, match="late rates must equal"):
+        summarize_route_slot_evidence(comparison)
 
 
 def test_slot_evidence_accepts_integer_valued_float_and_nullable_counts():

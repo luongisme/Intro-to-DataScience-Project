@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from .investigation import ROUTE_LABELS
 from .orders import SLOT_LABELS
 
 
@@ -42,6 +43,8 @@ def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
         raise ValueError("Routes require unique, non-null order IDs.")
     if set(routes["order_id"]) != set(orders["order_id"]):
         raise ValueError("Route order IDs must match analysis orders.")
+    if not routes["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Routes require non-null route_type labels from the recognized classifications.")
     if orders["order_purchase_timestamp"].isna().any() or not pd.api.types.is_datetime64_any_dtype(orders["order_purchase_timestamp"]):
         raise ValueError("Purchase timestamps must be complete datetimes.")
     if orders["approval_slot"].isna().any() or not orders["approval_slot"].isin(SLOT_LABELS).all():
@@ -305,7 +308,7 @@ def summarize_route_slot_evidence(
             or pd.api.types.is_bool_dtype(rates)
             or pd.api.types.is_complex_dtype(rates)):
         raise ValueError("Outcome late rates must be numeric percentages or null for zero orders.")
-    expected_rates = 100 * outcome["late_orders"] / outcome["orders"].replace(0, np.nan)
+    expected_rates = 100.0 * outcome["late_orders"] / outcome["orders"].replace(0, np.nan)
     if not np.isclose(rates.to_numpy(dtype=float, na_value=np.nan),
                       expected_rates.to_numpy(dtype=float, na_value=np.nan),
                       rtol=1e-10, atol=1e-9, equal_nan=True).all():

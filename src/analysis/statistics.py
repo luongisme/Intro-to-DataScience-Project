@@ -11,7 +11,7 @@ from .orders import SLOT_LABELS
 def _wilson_interval(late_orders: pd.Series, orders: pd.Series) -> tuple[pd.Series, pd.Series]:
     """Return 95% Wilson limits in percent for validated binomial counts."""
     z = 1.959963984540054
-    n = orders.replace(0, np.nan)
+    n = orders.astype(float).replace(0, np.nan)
     proportion = late_orders / n
     center = (proportion + z * z / (2 * n)) / (1 + z * z / n)
     half_width = (z * np.sqrt(proportion * (1 - proportion) / n + z * z / (4 * n * n))

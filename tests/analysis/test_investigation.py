@@ -870,12 +870,13 @@ def test_focus_routes_reject_invalid_order_inputs(defect, message):
         summarize_focus_routes(focus)
 
 
-def test_focus_route_figure_shows_full_scope_and_undefined_empty_groups():
+@pytest.mark.parametrize("count_dtype", ["int64", "Int8"])
+def test_focus_route_figure_shows_full_scope_and_undefined_empty_groups(count_dtype):
     import matplotlib.pyplot as plt
     from src.analysis.investigation_plots import plot_focus_routes
 
     _, focus = overnight_route_fixture()
-    table = summarize_focus_routes(focus)
+    table = summarize_focus_routes(focus).astype({"orders": count_dtype, "late_orders": count_dtype})
     before = table.copy(deep=True)
     figure = plot_focus_routes(table, SLOT_LABELS[0])
     try:

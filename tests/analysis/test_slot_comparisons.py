@@ -197,16 +197,17 @@ def test_selection_options_are_validated(kwargs):
         compare_approval_slot_groups(night, afternoon, **options)
 
 
-def test_comparison_figures_and_display_preserve_counts_and_units():
-    night = cohort([("SP", "RJ", 100, 10)], COMPARISON_SLOTS[0], "n")
+@pytest.mark.parametrize("count_dtype, orders, late", [("int64", 100, 10), ("Int8", 2, 2), ("Int8", 100, 10)])
+def test_comparison_figures_and_display_preserve_counts_and_units(count_dtype, orders, late):
+    night = cohort([("SP", "RJ", orders, late)], COMPARISON_SLOTS[0], "n")
     afternoon = cohort([], COMPARISON_SLOTS[1], "a")
     result = compare_approval_slot_groups(night, afternoon, group_by="state_pair")
-    table = result["plot_data"]
+    table = result["plot_data"].astype({"orders": count_dtype, "late_orders": count_dtype})
     before = table.copy(deep=True)
     figure = plot_slot_group_comparison(table, "state_pair")
     try:
         figure.canvas.draw()
-        assert figure.axes[0].patches[0].get_width() == 10
+        assert figure.axes[0].patches[0].get_width() == late
         assert any(text.get_text() == "No orders" for text in figure.axes[1].texts)
         assert "95% Wilson" in figure.axes[1].get_title()
         assert "Delivery outcomes by approval slot" in figure._suptitle.get_text()
@@ -386,15 +387,16 @@ def test_monthly_comparison_requires_valid_purchase_timestamps(defect):
         summarize_slot_group_months(night, afternoon, group_by="state_pair")
 
 
-def test_monthly_figures_show_zero_order_gaps_and_keep_full_rate_range():
+@pytest.mark.parametrize("count_dtype", ["int64", "Int8"])
+def test_monthly_figures_show_zero_order_gaps_and_keep_full_rate_range(count_dtype):
     from src.analysis.slot_comparisons import summarize_slot_group_months
     from src.analysis.investigation_plots import plot_slot_group_months
 
-    night = dated_cohort([("2018-01", "SP", "RJ", 1, 1), ("2018-03", "SP", "RJ", 3, 0)],
+    night = dated_cohort([("2018-01", "SP", "RJ", 2, 2), ("2018-03", "SP", "RJ", 3, 0)],
                          COMPARISON_SLOTS[0], "n")
     afternoon = dated_cohort([("2018-01", "SP", "RJ", 2, 0)], COMPARISON_SLOTS[1], "a")
     result = summarize_slot_group_months(night, afternoon, group_by="state_pair")
-    table = result["monthly"]
+    table = result["monthly"].astype({"orders": count_dtype, "late_orders": count_dtype})
     before = table.copy(deep=True)
     figure = plot_slot_group_months(table, group_by="state_pair", groups=["SP → RJ"])
     try:
@@ -402,7 +404,7 @@ def test_monthly_figures_show_zero_order_gaps_and_keep_full_rate_range():
         rates = figure.axes[0].lines[0].get_ydata()
         assert rates[0] == 100 and pd.isna(rates[1]) and rates[2] == 0
         assert figure.axes[0].get_ylim()[1] >= 100
-        assert figure.axes[1].lines[0].get_ydata().tolist() == [1, 0, 3]
+        assert figure.axes[1].lines[0].get_ydata().tolist() == [2, 0, 3]
     finally:
         plt.close(figure)
     pd.testing.assert_frame_equal(table, before)

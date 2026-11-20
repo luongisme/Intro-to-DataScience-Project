@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 
+from .investigation import ROUTE_LABELS
 from .orders import SLOT_LABELS
 from .statistics import _wilson_interval
 
@@ -33,6 +34,8 @@ def build_state_pair_orders(items: pd.DataFrame, orders: pd.DataFrame,
         raise ValueError("Orders and routes require unique, non-null order IDs.")
     if set(orders["order_id"]) != set(routes["order_id"]):
         raise ValueError("Route order IDs must match analysis order IDs exactly.")
+    if not routes["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Routes require non-null route_type labels from the recognized classifications.")
     if (orders["approval_slot"].isna().any()
             or not orders["approval_slot"].isin(SLOT_LABELS).all()):
         raise ValueError("Orders require a recognized approval slot.")
