@@ -1,8 +1,17 @@
 # EDA User Guide
 
-This guide covers running pre-cleaning inspections on the full merged dataset and reading their tables and figures. It assumes the repository and project environment are already available. For function contracts and dependencies, see the [EDA Technical Reference](Technical_Reference.md). Observed results are documented separately in the [EDA Report](../../reports/EDA/EDA_Report.md).
+This guide covers running pre-cleaning inspections on the full merged dataset and reading their tables and figures. It assumes the repository and project environment are already available. The [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb) contains the complete workflow. For function contracts and dependencies, see the [EDA Technical Reference](Technical_Reference.md). Observed results are documented separately in the [EDA Report](../../reports/EDA_Report.md).
 
-## 1. Dataset at a glance
+## Contents
+
+1. [Inputs and outputs](#1-inputs-and-outputs)
+2. [Run the notebook](#2-run-the-notebook)
+3. [Shared setup](#3-shared-setup)
+4. [Workflow by task](#4-workflow-by-task)
+5. [Read and verify outputs](#5-read-and-verify-outputs)
+6. [Troubleshooting](#6-troubleshooting)
+
+## 1. Inputs and outputs
 
 | Property | Reference input |
 |---|---|
@@ -16,16 +25,7 @@ This guide covers running pre-cleaning inspections on the full merged dataset an
 
 Reference counts describe the current merged input. They are not cleaning targets. All statuses, missing values and original values remain available during EDA. Customer records identified by `customer_id` do not count unique people across purchases.
 
-## Contents
-
-1. [Dataset at a glance](#1-dataset-at-a-glance)
-2. [Run the complete notebook](#2-run-the-complete-notebook)
-3. [Shared initialization](#3-shared-initialization)
-4. [Inspect selected aspects](#4-inspect-selected-aspects)
-5. [Read the outputs](#5-read-the-outputs)
-6. [Troubleshooting and scope](#6-troubleshooting-and-scope)
-
-## 2. Run the complete notebook
+## 2. Run the notebook
 
 Open the EDA notebook with the project Python kernel, restart the kernel and run all cells from top to bottom. Its seven sections are:
 
@@ -41,7 +41,7 @@ Open the EDA notebook with the project Python kernel, restart the kernel and run
 
 Later sections consume earlier results. After replacing `df` or changing the selected source, rerun the notebook from the loading cell. The final preservation assertions should pass. Tables and plots appear in notebook output; the report is maintained separately.
 
-## 3. Shared initialization
+## 3. Shared setup
 
 Run this block once per Python or notebook session from inside the repository. It loads existing merged data and prepares the basic profiles used in subsequent examples.
 
@@ -85,11 +85,12 @@ df = load_data("merged_order_items", stage="interim", file_format="csv")
 
 Then rebuild the baseline, roles, column profile and views from that same `df`. Use the schema-aware reader to preserve ZIP prefixes, timestamps, nulls and literal text values. The loader does not rerun merging. If no saved full dataset exists, follow the [Merge User Guide](../Merge/User_Guide.md).
 
-## 4. Inspect selected aspects
+## 4. Workflow by task
 
 The following blocks share initialization from section 3. Retain their returned objects for detailed investigation. The workflow helpers display tables and figures; lower-level profiling helpers return data without displaying it.
 
-### 4.1. Structure and repeated entities
+<a id="41-structure-and-repeated-entities"></a>
+### Structure and repeated entities
 
 ```python
 display(profile_dataset(df))
@@ -102,7 +103,8 @@ display(entity_consistency["conflicts"])
 
 Repeated order, product, customer and seller IDs are expected at item level. `build_entity_views()` refuses conflicting source attributes or invalid keys instead of selecting an arbitrary record.
 
-### 4.2. Numeric, category and time distributions
+<a id="42-numeric-category-and-time-distributions"></a>
+### Numeric, category and time distributions
 
 ```python
 numeric_profiles = eda.inspect_numeric_distributions(entity_views, column_roles)
@@ -112,7 +114,8 @@ temporal_distributions = eda.inspect_temporal_distributions(entity_views, column
 
 Price and freight are profiled per item; physical measurements per product. Order lifecycle timestamps use orders, while shipping deadlines use items. Quantile windows and IQR whiskers affect inspection only.
 
-### 4.3. Missingness and its context
+<a id="43-missingness-and-its-context"></a>
+### Missingness and its context
 
 ```python
 missing_patterns = eda.inspect_missing_patterns(df, entity_views, column_profile)
@@ -129,9 +132,10 @@ status_missing_rates = eda.inspect_status_missingness(
 
 These objects retain the full tables even where a notebook preview is bounded. A directional missingness heatmap uses the rows missing the conditioning column as its denominator. The status heatmap instead uses all orders within each status.
 
-### 4.4. Domain checks
+<a id="44-domain-checks"></a>
+### Domain checks
 
-Run sections 4.2 and 4.3 first because these checks reuse their results.
+Run the distribution and missingness sections first because these checks reuse their results.
 
 ```python
 text_format_profiles = eda.inspect_text_formats(
@@ -142,9 +146,54 @@ measurement_checks = eda.inspect_measurement_plausibility(numeric_profiles, df)
 order_structure = eda.inspect_order_structure(df)
 ```
 
-For the detailed investigations, run notebook section 6. Its dependencies are listed in the [workflow function reference](Technical_Reference.md#6-notebook-facing-workflow). It retains original records behind timestamp reversals, delivered-order gaps, physical issues, numeric tails, future deadlines, city whitespace and multi-seller/deadline/state patterns.
+<a id="45-investigate-records-behind-the-summaries"></a>
+### Investigate records behind the summaries
 
-### 4.5. Verify input preservation
+After the distribution, missingness and domain-check sections, use these calls to reproduce notebook section 6. Each result retains full supporting tables when the display is bounded.
+
+```python
+timeline_details = eda.inspect_timeline_details(
+    entity_views, order_timeline["timeline_profile"], missing_context["order_context"]
+)
+delivered_completeness = eda.inspect_delivered_completeness(
+    entity_views["orders"], missing_context["core_timestamp_columns"],
+    timeline_details["any_ordering_flag"], missing_context["order_context"]
+)
+product_completeness = eda.inspect_product_completeness(
+    entity_views, missing_context["product_measurement_columns"], df, entity_views["orders"]
+)
+numeric_tails = eda.inspect_numeric_tails(numeric_profiles, df, entity_views)
+deadline_calendar = eda.inspect_deadline_calendar(
+    entity_views["orders"], df, missing_context["order_timestamp_columns"]
+)
+seller_city_spacing = eda.inspect_seller_city_spacing(entity_views, df, entity_views["orders"])
+structure_overlap = eda.inspect_structure_overlap(
+    order_structure["order_composition"], entity_views["orders"], df
+)
+```
+
+| Finding | Records and tables |
+|---|---|
+| Timestamp reversals | `timeline_details["orders"]` and aligned `timeline_details["flags"]`; `precision_examples` holds bounded examples |
+| Delivered orders missing core timestamps | `delivered_completeness["delivered_missing_records"]` |
+| Missing or nonpositive measurements | `product_completeness["physical_product_records"]` and `physical_issue_summary` include item and order exposure |
+| Zero freight | `product_completeness["zero_freight"]`, aligned to `df`, and `zero_freight_by_status` |
+| Numeric tails | `numeric_tails["iqr_group_profiles"]` and bounded `numeric_tail_records` |
+| Deadlines beyond the latest purchase year | `deadline_calendar["far_deadline_records"]` |
+| Seller-city repeated spaces | `seller_city_spacing["city_space_records"]` and `city_form_counts` |
+| Multiple sellers, deadlines or state pairs | `structure_overlap["composition_context"]` and `composition_flags`; `composition_item_examples` is bounded |
+
+```python
+print(timeline_details["flags"].columns.tolist())
+display(product_completeness["physical_issue_summary"])
+display(product_completeness["physical_product_records"])
+display(delivered_completeness["delivered_missing_records"])
+```
+
+An empty table means the corresponding diagnostic found no matching records. Function details and dependencies are in the [workflow reference](Technical_Reference.md#6-notebook-facing-workflow).
+
+<a id="46-verify-input-preservation"></a>
+### Verify input preservation
 
 After the selected inspections, compare the source with the baseline captured in section 3:
 
@@ -158,7 +207,7 @@ pd.testing.assert_series_equal(
 print("EDA input preserved.")
 ```
 
-## 5. Read the outputs
+## 5. Read and verify outputs
 
 | Output | Where to inspect | Interpretation |
 |---|---|---|
@@ -177,7 +226,7 @@ Special frequency groups distinguish Missing, Blank and Other from literal sourc
 
 Entity views contain only records observed in the full item table. They do not recover orders without items or raw-source entities absent from the merge.
 
-## 6. Troubleshooting and scope
+## 6. Troubleshooting
 
 | Symptom | Action |
 |---|---|

@@ -1,0 +1,357 @@
+"""Compare recorded delivery stages within matched route and purchase periods."""
+
+import numpy as np
+import pandas as pd
+
+from .investigation import ROUTE_LABELS
+from .orders import SLOT_LABELS
+
+
+PURCHASE_PERIODS = (
+    ("Nov–Dec 2017", "2017-11", "2017-12"),
+    ("Feb–Mar 2018", "2018-02", "2018-03"),
+    ("Apr–Jul 2018", "2018-04", "2018-07"),
+)
+STAGES = ("Processing", "Carrier transit")
+
+
+def compare_route_delivery_stages(items: pd.DataFrame, orders: pd.DataFrame,
+                                  routes: pd.DataFrame, pair_orders: pd.DataFrame,
+                                  stage_profiles: dict[str, pd.DataFrame],
+                                  state_pair: tuple[str, str]) -> dict[str, pd.DataFrame]:
+    """Compare a selected pair with other inter-state orders to its destination.
+
+    Purchase periods and approval slots define like-for-like descriptive cells.
+    Stage durations come from investigate_delivery_stages, including its
+    invalid-interval status and eligible-day calendar convention.
+    """
+    needed = {"order_id", "order_purchase_timestamp", "approval_slot", "is_late"}
+    item_fields = {"order_id", "order_item_id", "customer_state", "seller_state"}
+    if needed.difference(orders.columns) or item_fields.difference(items.columns):
+        raise ValueError("Orders or items lack route-stage comparison columns.")
+    if {"order_id", "route_type", "items"}.difference(routes.columns):
+        raise ValueError("Routes require order ID, route type and item counts.")
+    if not isinstance(state_pair, tuple) or len(state_pair) != 2 or state_pair[0] == state_pair[1]:
+        raise ValueError("State pair must identify an inter-state route.")
+    if orders["order_id"].isna().any() or not orders["order_id"].is_unique:
+        raise ValueError("Order input requires unique, non-null order IDs.")
+    if pair_orders["order_id"].isna().any() or not pair_orders["order_id"].is_unique:
+        raise ValueError("Selected pair requires unique, non-null order IDs.")
+    if not set(pair_orders["order_id"]).issubset(set(orders["order_id"])):
+        raise ValueError("Selected pair must be a subset of analysis orders.")
+    if routes["order_id"].isna().any() or not routes["order_id"].is_unique:
+        raise ValueError("Routes require unique, non-null order IDs.")
+    if set(routes["order_id"]) != set(orders["order_id"]):
+        raise ValueError("Route order IDs must match analysis orders.")
+    if not routes["route_type"].isin(ROUTE_LABELS).all():
+        raise ValueError("Routes require non-null route_type labels from the recognized classifications.")
+    if orders["order_purchase_timestamp"].isna().any() or not pd.api.types.is_datetime64_any_dtype(orders["order_purchase_timestamp"]):
+        raise ValueError("Purchase timestamps must be complete datetimes.")
+    if orders["approval_slot"].isna().any() or not orders["approval_slot"].isin(SLOT_LABELS).all():
+        raise ValueError("Approval slots must be recognized and complete.")
+    if orders["is_late"].isna().any() or not orders["is_late"].isin([False, True]).all():
+        raise ValueError("Delivery outcomes must be binary and complete.")
+    if not {"records", "windows"}.issubset(stage_profiles):
+        raise ValueError("Stage profiles require records and windows.")
+
+    selected = items.loc[items["order_id"].isin(orders["order_id"]),
+                         ["order_id", "order_item_id", "customer_state", "seller_state"]].copy()
+    keys = selected[["order_id", "order_item_id"]]
+    if keys.isna().any().any() or keys.duplicated().any():
+        raise ValueError("Selected items require unique, non-null item keys.")
+    state = selected["customer_state"].astype("string").str.strip()
+    seller = selected["seller_state"].astype("string").str.strip()
+    selected["customer_state"] = state.replace("", pd.NA)
+    selected["known_rj"] = state.eq(state_pair[1]).fillna(False)
+    selected["matches_pair"] = (selected["known_rj"]
+                                & seller.eq(state_pair[0]).fillna(False))
+    selected["known"] = state.notna() & state.ne("").fillna(False)
+    destination = selected.groupby("order_id", sort=False, observed=True).agg(
+        item_count=("known_rj", "size"), all_destination=("known_rj", "all"),
+        complete_destination=("known", "all"),
+        distinct_destination=("customer_state", "nunique"),
+        all_pair_items=("matches_pair", "all"),
+    )
+    destination["complete_destination"] &= destination["distinct_destination"].eq(1)
+    route_view = routes.set_index("order_id")
+    expected = route_view["items"].reindex(orders["order_id"])
+    actual = destination["item_count"].reindex(orders["order_id"])
+    if expected.isna().any() or actual.isna().any() or not expected.eq(actual).all():
+        raise ValueError("Item counts differ from route input. Supply complete cleaned items.")
+    if not set(pair_orders["order_id"]).issubset(set(destination.index[destination["all_pair_items"]])):
+        raise ValueError("Selected pair must have the stated seller and customer states on every item.")
+    pair_ids = set(pair_orders["order_id"])
+    expected_pair_ids = set(destination.index[destination["all_pair_items"]])
+    if pair_ids != expected_pair_ids:
+        raise ValueError("Selected pair order IDs must match the complete state-pair cohort.")
+    if not route_view.loc[list(pair_ids), "route_type"].eq("Inter-state").all():
+        raise ValueError("Selected pair conflicts with inter-state route classification.")
+    view = orders[["order_id", "order_purchase_timestamp", "approval_slot", "is_late"]].reset_index(drop=True).copy()
+    view = view.join(route_view["route_type"].reindex(view["order_id"]).reset_index(drop=True))
+    view = view.join(destination[["all_destination", "complete_destination"]].reindex(view["order_id"]).reset_index(drop=True))
+    view["purchase_month"] = view["order_purchase_timestamp"].dt.strftime("%Y-%m")
+    view["period"] = pd.NA
+    for label, start, end in PURCHASE_PERIODS:
+        view.loc[view["purchase_month"].between(start, end), "period"] = label
+    view = view.loc[view["period"].notna()].copy()
+    view["group"] = np.select(
+        [view["order_id"].isin(pair_ids),
+         view["route_type"].eq("Inter-state") & view["all_destination"]],
+        [f"{state_pair[0]} → {state_pair[1]}", f"Other inter-state to {state_pair[1]}"],
+        default="Outside comparison",
+    )
+    groups = (f"{state_pair[0]} → {state_pair[1]}", f"Other inter-state to {state_pair[1]}")
+    coverage = []
+    for period, _, _ in PURCHASE_PERIODS:
+        rows = view.loc[view["period"].eq(period)]
+        inter = rows.loc[rows["route_type"].eq("Inter-state")]
+        compared = rows.loc[rows["group"].isin(groups)]
+        coverage.append({
+            "period": period, "inter_state_orders": len(inter),
+            "inter_state_unknown_destination": int((~inter["complete_destination"]).sum()),
+            "inter_state_to_destination": int(inter["all_destination"].sum()),
+            "selected_pair": int(compared["group"].eq(groups[0]).sum()),
+            "other_to_destination": int(compared["group"].eq(groups[1]).sum()),
+        })
+    cohort = view.loc[view["group"].isin(groups)].copy()
+    base_index = pd.MultiIndex.from_product(
+        [[entry[0] for entry in PURCHASE_PERIODS], groups, SLOT_LABELS],
+        names=["period", "group", "approval_slot"],
+    )
+    outcome = cohort.groupby(list(base_index.names), observed=True).agg(
+        orders=("order_id", "size"), late_orders=("is_late", "sum"),
+    ).reindex(base_index, fill_value=0).reset_index()
+    outcome[["orders", "late_orders"]] = outcome[["orders", "late_orders"]].astype(int)
+    outcome["late_rate_pct"] = 100 * outcome["late_orders"] / outcome["orders"].replace(0, np.nan)
+
+    records = stage_profiles["records"]
+    required_records = {"order_id", "stage", "status", "calendar_hours", "eligible_hours"}
+    if required_records.difference(records.columns) or records.duplicated(["order_id", "stage"]).any():
+        raise ValueError("Stage records require unique order-stage rows and duration fields.")
+    windows = stage_profiles["windows"]
+    if {"order_id", "promised_days"}.difference(windows.columns) or windows["order_id"].duplicated().any():
+        raise ValueError("Promised windows require one row per order.")
+    if set(records["order_id"]) != set(orders["order_id"]) or set(windows["order_id"]) != set(orders["order_id"]):
+        raise ValueError("Stage records and promised windows must cover analysis orders.")
+    if (not records["stage"].isin(STAGES).all()
+            or records.groupby("order_id", observed=True)["stage"].nunique().ne(len(STAGES)).any()):
+        raise ValueError("Each order requires both delivery-stage records.")
+    valid_records = records["status"].eq("valid")
+    durations = records[["calendar_hours", "eligible_hours"]]
+    if (not records["status"].isin(["valid", "missing_endpoint", "reversed"]).all()
+            or durations.loc[valid_records].isna().any().any()
+            or durations.loc[~valid_records].notna().any().any()):
+        raise ValueError("Stage status and duration values disagree.")
+    valid_durations = durations.loc[valid_records]
+    # Allow floating-point differences below 1e-9 hours.
+    if (not all(pd.api.types.is_numeric_dtype(valid_durations[column]) for column in valid_durations)
+            or not np.isfinite(valid_durations.to_numpy(dtype=float)).all()
+            or valid_durations.lt(0).any().any()
+            or valid_durations["eligible_hours"].gt(valid_durations["calendar_hours"] + 1e-9).any()):
+        raise ValueError("Valid stage durations must be finite, non-negative and eligible hours cannot exceed calendar hours.")
+    stage_rows = cohort[["order_id", "period", "group", "approval_slot", "is_late"]].merge(
+        records[["order_id", "stage", "status", "calendar_hours", "eligible_hours"]],
+        on="order_id", validate="one_to_many",
+    )
+
+    def duration_summary(keys, grid):
+        table = stage_rows.groupby(keys, observed=True).agg(
+            orders=("order_id", "size"), valid_intervals=("calendar_hours", "count"),
+            median_calendar_hours=("calendar_hours", "median"),
+            p75_calendar_hours=("calendar_hours", lambda x: x.quantile(.75)),
+            median_eligible_hours=("eligible_hours", "median"),
+            p75_eligible_hours=("eligible_hours", lambda x: x.quantile(.75)),
+        ).reindex(grid).reset_index()
+        table[["orders", "valid_intervals"]] = table[["orders", "valid_intervals"]].fillna(0).astype(int)
+        table["unavailable_intervals"] = table["orders"] - table["valid_intervals"]
+        return table
+
+    stage_grid = pd.MultiIndex.from_product(
+        [[entry[0] for entry in PURCHASE_PERIODS], groups, SLOT_LABELS, STAGES],
+        names=[*base_index.names, "stage"],
+    )
+    stages = duration_summary(list(stage_grid.names), stage_grid)
+    outcome_grid = pd.MultiIndex.from_product(
+        [[entry[0] for entry in PURCHASE_PERIODS], groups, SLOT_LABELS, STAGES, [False, True]],
+        names=[*base_index.names, "stage", "is_late"],
+    )
+    by_outcome = duration_summary(list(outcome_grid.names), outcome_grid)
+    promised = cohort[["order_id", "period", "group", "approval_slot"]].merge(
+        windows[["order_id", "promised_days"]], on="order_id", validate="one_to_one")
+    promises = promised.groupby(list(base_index.names), observed=True).agg(
+        orders=("order_id", "size"), evaluated=("promised_days", "count"),
+        median_days=("promised_days", "median"),
+        p75_days=("promised_days", lambda x: x.quantile(.75)),
+        negative_windows=("promised_days", lambda x: x.lt(0).sum()),
+    ).reindex(base_index).reset_index()
+    promises[["orders", "evaluated", "negative_windows"]] = (
+        promises[["orders", "evaluated", "negative_windows"]].fillna(0).astype(int))
+    promises["unavailable_windows"] = promises["orders"] - promises["evaluated"]
+    return {"coverage": pd.DataFrame(coverage), "outcomes": outcome,
+            "stages": stages, "by_outcome": by_outcome, "promises": promises}
+
+
+def summarize_stage_slots(
+    records: pd.DataFrame, *, approval_slots: tuple[str, ...] = SLOT_LABELS,
+) -> pd.DataFrame:
+    """Summarize recorded stages over all orders in each requested approval slot.
+
+    Records come from investigate_delivery_stages. Each order needs both stage
+    rows in one slot. Only valid intervals enter duration statistics; missing
+    and reversed intervals remain in order and unavailable counts. Quantiles
+    use linear interpolation. No month weights or outcome split are applied.
+    """
+    required = {"order_id", "approval_slot", "stage", "status", "calendar_hours", "eligible_hours"}
+    if required.difference(records.columns):
+        raise ValueError("Stage summaries require order, slot, stage, status and duration fields.")
+    if (not isinstance(approval_slots, tuple) or not approval_slots
+            or any(slot not in SLOT_LABELS for slot in approval_slots)
+            or len(set(approval_slots)) != len(approval_slots)):
+        raise ValueError("Approval slots must be distinct recognized labels in a nonempty tuple.")
+    if not records["approval_slot"].isin(SLOT_LABELS).all():
+        raise ValueError("Stage records require recognized, non-null approval slots.")
+    rows = records.loc[records["approval_slot"].isin(approval_slots), sorted(required)].copy()
+    if (rows["order_id"].isna().any() or rows.duplicated(["order_id", "stage"]).any()
+            or not rows["stage"].isin(STAGES).all()):
+        raise ValueError("Stage records require unique, non-null order-stage keys and recognized stages.")
+    groups = rows.groupby("order_id", observed=True)
+    if (groups["stage"].nunique().ne(len(STAGES)).any()
+            or groups["approval_slot"].nunique().ne(1).any()):
+        raise ValueError("Each order must have both stages in one approval slot.")
+    valid = rows["status"].eq("valid")
+    durations = rows[["calendar_hours", "eligible_hours"]]
+    if (not rows["status"].isin(["valid", "missing_endpoint", "reversed"]).all()
+            or durations.loc[valid].isna().any().any()
+            or durations.loc[~valid].notna().any().any()):
+        raise ValueError("Stage status and duration values disagree.")
+    evaluated = durations.loc[valid]
+    if not evaluated.empty:
+        if any(not pd.api.types.is_numeric_dtype(evaluated[c])
+               or pd.api.types.is_bool_dtype(evaluated[c])
+               or pd.api.types.is_complex_dtype(evaluated[c]) for c in evaluated):
+            raise ValueError("Valid stage durations must be finite, nonnegative numeric hours.")
+        numbers = evaluated.to_numpy(dtype=float, na_value=np.nan)
+        if (not np.isfinite(numbers).all() or (numbers < 0).any()
+                or evaluated["eligible_hours"].gt(evaluated["calendar_hours"] + 1e-9).any()):
+            raise ValueError("Valid stage durations must be finite, nonnegative and eligible hours cannot exceed calendar hours.")
+    rows[["calendar_hours", "eligible_hours"]] = durations.to_numpy(dtype=float, na_value=np.nan)
+    grid = pd.MultiIndex.from_product([approval_slots, STAGES], names=["approval_slot", "stage"])
+    result = rows.groupby(["approval_slot", "stage"], observed=True).agg(
+        orders=("order_id", "size"), valid_intervals=("calendar_hours", "count"),
+        median_calendar_hours=("calendar_hours", "median"),
+        p75_calendar_hours=("calendar_hours", lambda values: values.quantile(.75, interpolation="linear")),
+        median_eligible_hours=("eligible_hours", "median"),
+        p75_eligible_hours=("eligible_hours", lambda values: values.quantile(.75, interpolation="linear")),
+    ).reindex(grid).reset_index()
+    result[["orders", "valid_intervals"]] = result[["orders", "valid_intervals"]].fillna(0).astype("int64")
+    result["unavailable_intervals"] = result["orders"] - result["valid_intervals"]
+    return result[["approval_slot", "stage", "orders", "valid_intervals", "unavailable_intervals",
+                   "median_calendar_hours", "p75_calendar_hours",
+                   "median_eligible_hours", "p75_eligible_hours"]]
+
+
+def summarize_route_slot_evidence(
+    comparison: dict[str, pd.DataFrame], *,
+    approval_slots: tuple[str, ...] = (SLOT_LABELS[0], SLOT_LABELS[2]),
+) -> pd.DataFrame:
+    """Join existing outcome, stage and promise medians for selected approval slots.
+
+    Inputs are the complete tables returned by compare_route_delivery_stages.
+    Keep approval_slot in the result so periods and destination groups remain
+    distinguishable. Counts must be finite nonnegative integers and rates must
+    use their matching counts; zero-order rates remain undefined. Rates are
+    checked before display rounding (rtol=1e-10, atol=1e-9 percentage points).
+    Empty cells retain zero counts and undefined medians.
+    """
+    if (not isinstance(approval_slots, tuple) or not approval_slots
+            or any(slot not in SLOT_LABELS for slot in approval_slots)
+            or len(set(approval_slots)) != len(approval_slots)):
+        raise ValueError("Approval slots must be a nonempty tuple of distinct recognized labels.")
+    keys = ["period", "group", "approval_slot"]
+    fields = {
+        "outcomes": [*keys, "orders", "late_orders", "late_rate_pct"],
+        "stages": [*keys, "stage", "orders", "median_calendar_hours"],
+        "promises": [*keys, "orders", "median_days"],
+    }
+    for name, columns in fields.items():
+        if name not in comparison:
+            raise ValueError(f"Missing comparison table: {name}.")
+        missing = set(columns).difference(comparison[name].columns)
+        if missing:
+            raise ValueError(f"Missing {name} evidence columns: {sorted(missing)}")
+    tables = {
+        name: comparison[name].loc[
+            comparison[name]["approval_slot"].isin(approval_slots), columns,
+        ].copy()
+        for name, columns in fields.items()
+    }
+    outcome, stages, promises = (tables[name] for name in fields)
+    for name, table in tables.items():
+        count_columns = ["orders", "late_orders"] if name == "outcomes" else ["orders"]
+        for column in count_columns:
+            values = table[column]
+            if values.empty:
+                continue
+            if (not pd.api.types.is_numeric_dtype(values)
+                    or pd.api.types.is_bool_dtype(values)
+                    or pd.api.types.is_complex_dtype(values)):
+                raise ValueError(f"{name}.{column} must contain finite, nonnegative integer counts.")
+            numbers = values.to_numpy(dtype=float, na_value=np.nan)
+            if (not np.isfinite(numbers).all() or (numbers < 0).any()
+                    or (numbers != np.floor(numbers)).any()):
+                raise ValueError(f"{name}.{column} must contain finite, nonnegative integer counts.")
+    if outcome["late_orders"].gt(outcome["orders"]).any():
+        raise ValueError("Late orders cannot exceed total orders in outcome evidence.")
+    rates = outcome["late_rate_pct"]
+    if rates.notna().any() and (
+            not pd.api.types.is_numeric_dtype(rates)
+            or pd.api.types.is_bool_dtype(rates)
+            or pd.api.types.is_complex_dtype(rates)):
+        raise ValueError("Outcome late rates must be numeric percentages or null for zero orders.")
+    expected_rates = 100.0 * outcome["late_orders"] / outcome["orders"].replace(0, np.nan)
+    if not np.isclose(rates.to_numpy(dtype=float, na_value=np.nan),
+                      expected_rates.to_numpy(dtype=float, na_value=np.nan),
+                      rtol=1e-10, atol=1e-9, equal_nan=True).all():
+        raise ValueError("Outcome late rates must equal 100 * late orders / orders; zero-order rates must be null.")
+    for name, table in tables.items():
+        table_keys = [*keys, "stage"] if name == "stages" else keys
+        if table[table_keys].isna().any().any() or table.duplicated(table_keys).any():
+            raise ValueError(f"{name} evidence requires unique, non-null comparison keys.")
+    expected_cells = comparison["outcomes"][["period", "group"]].drop_duplicates().merge(
+        pd.DataFrame({"approval_slot": list(approval_slots)}), how="cross",
+    )
+    actual_keys = pd.MultiIndex.from_frame(outcome[keys])
+    expected_keys = pd.MultiIndex.from_frame(expected_cells[keys])
+    if set(actual_keys) != set(expected_keys):
+        raise ValueError("Outcome evidence must cover every requested approval slot.")
+    promise_keys = pd.MultiIndex.from_frame(promises[keys])
+    if set(promise_keys) != set(actual_keys):
+        raise ValueError("Promised windows must cover every requested comparison cell.")
+    expected_stages = expected_cells.merge(pd.DataFrame({"stage": list(STAGES)}), how="cross")
+    if set(pd.MultiIndex.from_frame(stages[[*keys, "stage"]])) != set(
+            pd.MultiIndex.from_frame(expected_stages[[*keys, "stage"]])):
+        raise ValueError("Both delivery stages must cover every requested comparison cell.")
+    wide = stages.pivot(index=keys, columns="stage", values="median_calendar_hours")
+    # Reindex columns to preserve the output schema for an empty comparison.
+    wide = wide.reindex(columns=STAGES).rename(columns={
+        "Processing": "median_processing_hours",
+        "Carrier transit": "median_transit_hours",
+    }).reset_index()
+    result = outcome.merge(wide, on=keys, how="left", validate="one_to_one")
+    result = result.merge(promises.rename(columns={"median_days": "median_promised_days"}),
+                          on=keys, how="left", validate="one_to_one", suffixes=("", "_promise"))
+    if not result["orders"].eq(result["orders_promise"]).all():
+        raise ValueError("Outcome and promised-window order counts differ.")
+    stage_counts = stages.merge(outcome[[*keys, "orders"]], on=keys, how="left",
+                                validate="many_to_one", suffixes=("_stage", "_outcome"))
+    if not stage_counts["orders_stage"].eq(stage_counts["orders_outcome"]).all():
+        raise ValueError("Stage and outcome order counts differ.")
+    return result[[*keys, "orders", "late_orders", "late_rate_pct",
+                   "median_processing_hours", "median_transit_hours", "median_promised_days"]]
+
+
+def summarize_afternoon_route_evidence(comparison: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Join afternoon medians while preserving the original compact table schema."""
+    return summarize_route_slot_evidence(
+        comparison, approval_slots=(SLOT_LABELS[2],),
+    ).drop(columns="approval_slot")

@@ -1,9 +1,22 @@
 # Merge User Guide
 
-This guide covers selecting source tables, merging or reloading datasets, and interpreting the results before cleaning, preprocessing, and analysis. It assumes the repository and project environment are already available. For implementation details, see the [Merge Technical Reference](Technical_Reference.md).
+Use this guide to merge Olist tables, inspect join results and reload saved datasets. See the [notebook](../../notebooks/00_data_merging.ipynb), [Technical Reference](Technical_Reference.md) and [Merge Report](../../reports/Merge_Report.md).
+
+## Contents
+
+1. [Inputs and outputs](#1-inputs-and-outputs)
+2. [Run the notebook](#2-run-the-notebook)
+3. [Shared setup](#3-shared-setup)
+4. [Workflow by task](#4-workflow-by-task)
+5. [Read and verify outputs](#5-read-and-verify-outputs)
+6. [Troubleshooting](#6-troubleshooting)
+
+## 1. Inputs and outputs
+
+The full merge requires `olist_order_items_dataset.csv`, `olist_orders_dataset.csv`, `olist_customers_dataset.csv`, `olist_products_dataset.csv` and `olist_sellers_dataset.csv` in `data/raw/`.
 
 <a id="full"></a>
-## 1. Full dataset at a glance
+### Full dataset at a glance
 
 | Property | Reference result |
 |---|---|
@@ -12,7 +25,7 @@ This guide covers selecting source tables, merging or reloading datasets, and in
 | Shape | **112,650 rows × 25 columns across 98,666 orders** |
 | Unique key | The **composite key** `(order_id, order_item_id)` |
 | Dataset name | `merged_order_items` |
-| Storage | `../../data/interim`; Parquet first, CSV fallback if needed |
+| Storage | `data/interim`; Parquet first, CSV fallback if needed |
 
 Key considerations:
 
@@ -20,24 +33,16 @@ Key considerations:
 - The merged dataset retains order statuses and missing attributes. Cleaning rules and delivery-time features have not been applied.
 - The raw orders table contains 99,441 orders, while order_items contains 98,666 distinct orders. The full item-level dataset does not create placeholder rows for the 775 orders without items. The `orders + customers` combination retains all 99,441 orders.
 
-**Navigation**
+## 2. Run the notebook
 
-| Task | Reference |
-|---|---|
-| Initialize a Python or notebook session | [Shared initialization](#start) |
-| Merge the full dataset, inspect, save, or reload | [Shared operations](#operations) |
-| Select a pair, triple, or four-table combination | [26-combination lookup](#lookup) |
-| Review source data, schema, and downstream considerations | [Data notes](#data-notes) |
-| Select columns, rename fields, or configure join keys | [Custom joins](#custom) |
-| Run a complete example with imports and error handling | [Standalone full workflow](#complete) |
-| Diagnose a failure | [Troubleshooting](#errors) |
+Open [00_data_merging.ipynb](../../notebooks/00_data_merging.ipynb) with the project kernel and run its cells in order. It loads the five sources, merges them, displays diagnostics, saves the full result in `data/interim/` and verifies the output.
 
-**Standard workflow:** run section 2 once, select a combination in section 4, then inspect or save it using section 3. Reloading an existing file only requires section 2 and section 3.3. Repeat initialization after restarting the kernel or Python session.
+## 3. Shared setup
 
 <a id="start"></a>
-## 2. Shared initialization — once per session
+### Shared initialization — once per session
 
-This block locates the project root, imports shared functions, and sets the full dataset as the default selection. It does not merge or save data. Run it inside the repository or a subdirectory such as `../../notebooks`. Merging requires the source CSV files in `../../data/raw`; reloading interim data only requires the saved dataset.
+This block locates the project root, imports shared functions, and sets the full dataset as the default selection. It does not merge or save data. Run it inside the repository or a subdirectory such as `../../notebooks`. Merging requires the source CSV files in `data/raw`; reloading interim data only requires the saved dataset.
 
 ```python
 import sys
@@ -65,10 +70,14 @@ dataset_name = "merged_order_items"
 
 Subsequent snippets use these imports. Each combination assigns its own `dataset_name` and `result`, so it does not depend on running another combination first. Imports required only by custom joins remain with those examples.
 
-<a id="operations"></a>
-## 3. Shared operations
+## 4. Workflow by task
 
-### 3.1. Merge and inspect — full dataset example
+Run shared setup once, then use a task below. Each combination snippet creates its own result and report tables. The standalone example includes its own setup.
+
+<a id="operations"></a>
+### Shared operations
+
+#### Merge and inspect — full dataset example
 
 After initialization, create the full result in memory:
 
@@ -83,7 +92,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
         display(table)
 ```
 
-For another combination, use its snippet in section 4. To inspect all eight report tables afterward, reuse the `with ...` block above; each combination snippet already creates `tables`.
+For another combination, use its snippet in the combination lookup. To inspect all eight report tables afterward, reuse the `with ...` block above; each combination snippet already creates `tables`.
 
 | Object or table | Purpose |
 |---|---|
@@ -99,7 +108,7 @@ For another combination, use its snippet in section 4. To inspect all eight repo
 | `tables["validation"]` | Recorded validation statuses |
 | `tables["schema"]` | Expected/actual dtypes, key components, and required columns |
 
-### 3.2. Save the current result
+#### Save the current result
 
 Use the `dataset_name` and `result` from the same combination. Do not pair a name from one selection with another selection's data.
 
@@ -113,7 +122,7 @@ saved_path = save_dataset(
 print(saved_path)
 ```
 
-The saver attempts Parquet first, reports any failure, then tries CSV. `saved_path` identifies the actual saved file. Dataset names exclude the extension. Merge output belongs in `../../data/interim`; `../../data/processed` is reserved for cleaned data.
+The saver attempts Parquet first, reports any failure, then tries CSV. `saved_path` identifies the actual saved file. Dataset names exclude the extension. Merge output belongs in `data/interim`; `data/processed` is reserved for cleaned data.
 
 To reload the exact format just saved and compare it precisely:
 
@@ -127,7 +136,7 @@ reloaded = load_data(
 pd.testing.assert_frame_equal(result.data, reloaded, check_exact=True)
 ```
 
-### 3.3. Read an existing dataset
+#### Read an existing dataset
 
 Initialization selects the full dataset by default. This block preserves any subsequent `dataset_name` selection. To choose another file, assign its name before reading, for example `dataset_name = "merged_orders__customers"`.
 
@@ -145,7 +154,7 @@ print(df.shape)
 display(df.head(3))
 ```
 
-Use the dataset name listed for the required combination; its merge snippet does not need to run first. All 26 standard names have registered schemas. Custom names require an explicit schema, as shown in section 6.1.
+Use the dataset name listed for the required combination; its merge snippet does not need to run first. All 26 standard names have registered schemas. Custom names require an explicit schema, as shown in the product dimensions custom join example.
 
 **Format considerations:**
 
@@ -155,9 +164,9 @@ Use the dataset name listed for the required combination; its merge snippet does
 - Row, column, and order counts in this guide refer to the reference raw dataset. If the inputs change, investigate the difference and review the reference counts rather than altering data to force a match.
 
 <a id="lookup"></a>
-## 4. Select a combination
+### Select a combination
 
-Click a combination to inspect its resolved sources, grain, key, schema, dataset name, and snippet. Initialize using [section 2](#start) before running any combination snippet.
+Click a combination to inspect its resolved sources, grain, key, schema, dataset name, and snippet. Initialize using [shared setup](#start) before running any combination snippet.
 
 | Combination | Bridge tables | Reference rows | Reference columns |
 |---|---|---:|---:|
@@ -190,13 +199,13 @@ Click a combination to inspect its resolved sources, grain, key, schema, dataset
 
 Standard combinations use strict `LEFT m:1` joins. Bridge tables and their columns remain in the result. Dataset names reflect the **requested tables**, rather than every automatically included source.
 
-The I/O/C/P/S schema groups are defined in [section 5.4](#schema). Only `orders + customers` has order-level grain; all other combinations resolve to an order_items base and item-level grain. Each snippet displays overview and schema. Use section 3.1 for all eight tables, section 3.2 to save, or its dataset name with section 3.3 to reload without merging.
+The I/O/C/P/S schema groups are defined in [canonical schema](#schema). Only `orders + customers` has order-level grain; all other combinations resolve to an order_items base and item-level grain. Each snippet displays overview and schema. Use the merge and inspect example for all eight tables, the save example to save, or its dataset name with the read example to reload without merging.
 
 <a id="pairs"></a>
-### 4.1. Two tables
+#### Two tables
 
 <a id="pair-i-o"></a>
-#### order_items + orders
+##### order_items + orders
 
 No bridges; item base, key `(order_id, order_item_id)`. Join `orders(order_id)`. Reference: **112,650 rows, 14 columns, 98,666 orders**; schema **I → O**.
 
@@ -211,7 +220,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-i-c"></a>
-#### order_items + customers
+##### order_items + customers
 
 Adds `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id)`. Reference: **112,650 rows, 17 columns, 98,666 orders**; schema **I → O → C**.
 
@@ -226,7 +235,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-i-p"></a>
-#### order_items + products
+##### order_items + products
 
 No bridges; item base, key `(order_id, order_item_id)`. Join `products(product_id)`. Reference: **112,650 rows, 12 columns, 98,666 orders**; schema **I → P**.
 
@@ -241,7 +250,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-i-s"></a>
-#### order_items + sellers
+##### order_items + sellers
 
 No bridges; item base, key `(order_id, order_item_id)`. Join `sellers(seller_id)`. Reference: **112,650 rows, 10 columns, 98,666 orders**; schema **I → S**.
 
@@ -256,7 +265,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-o-c"></a>
-#### orders + customers
+##### orders + customers
 
 No bridges; orders base, key `order_id`. Join `customers(customer_id)`. Reference: **99,441 rows, 11 columns, 99,441 orders**; schema **order_id → O → C**.
 
@@ -271,7 +280,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-o-p"></a>
-#### orders + products
+##### orders + products
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → products(product_id)`. Reference: **112,650 rows, 19 columns, 98,666 orders**; schema **I → O → P**.
 
@@ -286,7 +295,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-o-s"></a>
-#### orders + sellers
+##### orders + sellers
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → sellers(seller_id)`. Reference: **112,650 rows, 17 columns, 98,666 orders**; schema **I → O → S**.
 
@@ -301,7 +310,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-c-p"></a>
-#### customers + products
+##### customers + products
 
 Adds `order_items` and `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → C → P**.
 
@@ -316,7 +325,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-c-s"></a>
-#### customers + sellers
+##### customers + sellers
 
 Adds `order_items` and `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → sellers(seller_id)`. Reference: **112,650 rows, 20 columns, 98,666 orders**; schema **I → O → C → S**.
 
@@ -331,7 +340,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="pair-p-s"></a>
-#### products + sellers
+##### products + sellers
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 15 columns, 98,666 orders**; schema **I → P → S**.
 
@@ -346,10 +355,10 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triples"></a>
-### 4.2. Three tables
+#### Three tables
 
 <a id="triple-i-o-c"></a>
-#### order_items + orders + customers
+##### order_items + orders + customers
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id)`. Reference: **112,650 rows, 17 columns, 98,666 orders**; schema **I → O → C**.
 
@@ -364,7 +373,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-i-o-p"></a>
-#### order_items + orders + products
+##### order_items + orders + products
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → products(product_id)`. Reference: **112,650 rows, 19 columns, 98,666 orders**; schema **I → O → P**.
 
@@ -379,7 +388,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-i-o-s"></a>
-#### order_items + orders + sellers
+##### order_items + orders + sellers
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → sellers(seller_id)`. Reference: **112,650 rows, 17 columns, 98,666 orders**; schema **I → O → S**.
 
@@ -394,7 +403,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-i-c-p"></a>
-#### order_items + customers + products
+##### order_items + customers + products
 
 Adds `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → C → P**.
 
@@ -409,7 +418,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-i-c-s"></a>
-#### order_items + customers + sellers
+##### order_items + customers + sellers
 
 Adds `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → sellers(seller_id)`. Reference: **112,650 rows, 20 columns, 98,666 orders**; schema **I → O → C → S**.
 
@@ -424,7 +433,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-i-p-s"></a>
-#### order_items + products + sellers
+##### order_items + products + sellers
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 15 columns, 98,666 orders**; schema **I → P → S**.
 
@@ -439,7 +448,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-o-c-p"></a>
-#### orders + customers + products
+##### orders + customers + products
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → C → P**.
 
@@ -454,7 +463,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-o-c-s"></a>
-#### orders + customers + sellers
+##### orders + customers + sellers
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → sellers(seller_id)`. Reference: **112,650 rows, 20 columns, 98,666 orders**; schema **I → O → C → S**.
 
@@ -469,7 +478,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-o-p-s"></a>
-#### orders + products + sellers
+##### orders + products + sellers
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → P → S**.
 
@@ -484,7 +493,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="triple-c-p-s"></a>
-#### customers + products + sellers
+##### customers + products + sellers
 
 Adds `order_items` and `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 25 columns, 98,666 orders**; schema **I → O → C → P → S**.
 
@@ -499,10 +508,10 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="quadruples"></a>
-### 4.3. Four tables
+#### Four tables
 
 <a id="quad-i-o-c-p"></a>
-#### order_items + orders + customers + products
+##### order_items + orders + customers + products
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → C → P**.
 
@@ -517,7 +526,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="quad-i-o-c-s"></a>
-#### order_items + orders + customers + sellers
+##### order_items + orders + customers + sellers
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → sellers(seller_id)`. Reference: **112,650 rows, 20 columns, 98,666 orders**; schema **I → O → C → S**.
 
@@ -532,7 +541,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="quad-i-o-p-s"></a>
-#### order_items + orders + products + sellers
+##### order_items + orders + products + sellers
 
 No bridges; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 22 columns, 98,666 orders**; schema **I → O → P → S**.
 
@@ -547,7 +556,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="quad-i-c-p-s"></a>
-#### order_items + customers + products + sellers
+##### order_items + customers + products + sellers
 
 Adds `orders`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 25 columns, 98,666 orders**; schema **I → O → C → P → S**.
 
@@ -562,7 +571,7 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 [↑ Lookup](#lookup)
 
 <a id="quad-o-c-p-s"></a>
-#### orders + customers + products + sellers
+##### orders + customers + products + sellers
 
 Adds `order_items`; item base, key `(order_id, order_item_id)`. Joins `orders(order_id) → customers(customer_id) → products(product_id) → sellers(seller_id)`. Reference: **112,650 rows, 25 columns, 98,666 orders**; schema **I → O → C → P → S**.
 
@@ -576,82 +585,8 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 
 [↑ Lookup](#lookup)
 
-<a id="data-notes"></a>
-## 5. Data considerations before cleaning and preprocessing
-
-### 5.1. Grain and missing values
-
-- Row counts and order counts measure different things at item grain. Define how order-level attributes are aggregated by `order_id`; do not repeatedly sum or count the same order information across its items.
-- An unmatched key is a relationship issue. A matched product can still lack weight or dimensions; missing attributes do not imply a failed join.
-- Timestamps use `datetime64[us]` without a declared timezone. Merge does not convert timezones, calculate lead times, or handle holidays.
-- Preserve string ZIP/ID dtypes when reloading. Converting ZIP codes to numbers discards leading zeros that cannot reliably be reconstructed.
-- `customer_unique_id` is excluded from this schema. Do not assume `customer_id` identifies the same person across multiple orders.
-- Available columns depend on the **resolved sources**, including bridges. For example, `order_items + customers` includes orders timestamps; `order_items + products` does not contain customer state or delivery timestamps.
-- Rules for retaining delivered orders, excluding missing/negative time segments, identifying lateness, or classifying routes belong to the relevant downstream stage. Merge does not apply them.
-
-### 5.2. Interpreting validation information
-
-`Current rows`, `Current columns`, and actual dtypes describe the DataFrame currently inspected. `Recorded status` reflects checks at merge time. If the DataFrame is subsequently modified, revalidate it using `validate_table_contract()` where appropriate; the report does not certify the modified data automatically.
-
-`Matched left rows` counts input left rows, not expanded output rows. `Row count checked = Not applicable` means that row-preservation rule does not apply, rather than a failed check. `Unique key component` identifies a component of one composite key, not an individual uniqueness constraint.
-
-### 5.3. Selected sources
-
-| API name | File under `../../data/raw` | Raw rows | Selected columns |
-|---|---|---:|---:|
-| `order_items` | `olist_order_items_dataset.csv` | 112,650 | 7 |
-| `orders` | `olist_orders_dataset.csv` | 99,441 | 8 |
-| `customers` | `olist_customers_dataset.csv` | 99,441 | 4 |
-| `products` | `olist_products_dataset.csv` | 32,951 | 6 |
-| `sellers` | `olist_sellers_dataset.csv` | 3,095 | 4 |
-
-Column counts refer to the merge contract, not every column in the source CSV. Payments, reviews, geolocation, and category translation are outside the five-source standard registry.
-
-<a id="schema"></a>
-### 5.4. Canonical schema and column groups
-
-Combination descriptions use the following schema groups. Concatenating groups in the stated order gives the **exact output names and column order**, without duplicated join keys.
-
-| Position | Column | Canonical dtype | Group |
-|---:|---|---|---|
-| 1 | `order_id` | `string` | I |
-| 2 | `order_item_id` | `int64` | I |
-| 3 | `product_id` | `string` | I |
-| 4 | `seller_id` | `string` | I |
-| 5 | `shipping_limit_date` | `datetime64[us]` | I |
-| 6 | `price` | `float64` | I |
-| 7 | `freight_value` | `float64` | I |
-| 8 | `customer_id` | `string` | O |
-| 9 | `order_status` | `string` | O |
-| 10 | `order_purchase_timestamp` | `datetime64[us]` | O |
-| 11 | `order_approved_at` | `datetime64[us]` | O |
-| 12 | `order_delivered_carrier_date` | `datetime64[us]` | O |
-| 13 | `order_delivered_customer_date` | `datetime64[us]` | O |
-| 14 | `order_estimated_delivery_date` | `datetime64[us]` | O |
-| 15 | `customer_zip_code_prefix` | `string` | C |
-| 16 | `customer_city` | `string` | C |
-| 17 | `customer_state` | `string` | C |
-| 18 | `product_category_name` | `string` | P |
-| 19 | `product_weight_g` | `float64` | P |
-| 20 | `product_length_cm` | `float64` | P |
-| 21 | `product_height_cm` | `float64` | P |
-| 22 | `product_width_cm` | `float64` | P |
-| 23 | `seller_zip_code_prefix` | `string` | S |
-| 24 | `seller_city` | `string` | S |
-| 25 | `seller_state` | `string` | S |
-
-- **I:** the first seven columns, in order.
-- **O:** seven additional orders columns, from customer_id through order_estimated_delivery_date.
-- **C:** three additional customer columns, ZIP through state.
-- **P:** five additional product columns, category through width.
-- **S:** three additional seller columns, ZIP through state.
-
-For example, `I → O → P` has 19 columns. The order-level `orders + customers` schema is `order_id → O → C`, with 11 columns. Full is `I → O → C → P → S`.
-
-Full and every item-based combination use **one composite key**, `(order_id, order_item_id)`; individual components need not be unique. The orders + customers key is order_id. Full requires non-missing order_id, order_item_id, product_id, seller_id, and customer_id. Other attributes may be missing. String ZIP codes preserve leading zeros; timestamps retain microsecond resolution.
-
 <a id="custom"></a>
-## 6. Custom joins
+### Custom joins
 
 Use `tables=[...]` for standard combinations with automatic bridges, or `base=...` and `joins=[JoinSpec(...)]` for an explicit plan. Do not mix modes. Explicit plans preserve the specified order and do not add bridges.
 
@@ -668,7 +603,7 @@ Use `tables=[...]` for standard combinations with automatic bridges, or `base=..
 
 Null/blank keys never match each other. Match policy is evaluated from the left before joining. Many-to-many must be explicitly declared and can expand rows. In explicit mode, `grain=None` means grain is undeclared; the unique key can be empty when uniqueness is not guaranteed.
 
-### 6.1. Select product dimensions and rename weight
+#### Select product dimensions and rename weight
 
 After shared initialization, import JoinSpec for this example. It uses an item base and strict LEFT m:1 on product_id. Reference: **112,650 rows, 11 columns, 98,666 orders**.
 
@@ -709,7 +644,7 @@ display(df.head(3))
 
 Choose file_format="csv" for direct CSV reading. The schema must match the save configuration. A registered standard name cannot be read with a different schema.
 
-### 6.2. Differently named composite keys with unmatched rows
+#### Differently named composite keys with unmatched rows
 
 This memory-mode example joins `(order_id, parcel_no)` to `(reference_id, sequence)`. Additional imports stay with the example. Supplied DataFrames must already satisfy their schemas and dtypes.
 
@@ -753,12 +688,12 @@ with pd.option_context("display.max_rows", None, "display.max_columns", None, "d
 
 Reference result: **2 rows, 5 columns**, with one matched and one unmatched left row. The result key remains `(order_id, parcel_no)`; right-side sequence becomes nullable Int64. Missing attributes are not filled. The assigned name custom_shipments_tracking allows the shared save block to be used directly; reloading requires the matching custom schema.
 
-An empty `joins=[]` is valid: it returns a checked copy of the base and a report without inferring grain. Use section 3.1 to inspect all report sections.
+An empty `joins=[]` is valid: it returns a checked copy of the base and a report without inferring grain. Use the merge and inspect example to inspect all report sections.
 
 <a id="complete"></a>
-## 7. Standalone full workflow
+### Standalone full workflow
 
-This complete block includes imports and error handling and can run without section 2. The shared workflow avoids repeated imports in routine use; this independent example intentionally includes its own imports.
+This complete block includes imports and error handling and can run without shared setup. The shared workflow avoids repeated imports in routine use; this independent example intentionally includes its own imports.
 
 By default it merges and displays results in memory. Set SAVE_OUTPUT=True to save, reload the actual saved format, and compare exactly. Errors are printed and re-raised. Its reference counts apply to the current reference raw dataset.
 
@@ -793,8 +728,7 @@ try:
     dataset_name = "merged_order_items"
     result = merge_data(tables=["order_items", "orders", "customers", "products", "sellers"])
     actual = (*result.data.shape, result.data["order_id"].nunique())
-    if actual != (112650, 25, 98666):
-        raise ValueError(f"Reference counts differ: {actual}. Check the raw dataset version.")
+    print(f"Rows, columns, orders: {actual}")
     tables = build_merge_report_tables(result)
     with pd.option_context("display.max_rows", None, "display.max_columns", None, "display.max_colwidth", None):
         for section, table in tables.items():
@@ -816,8 +750,86 @@ except Exception as error:
 
 </details>
 
+## 5. Read and verify outputs
+
+<a id="data-notes"></a>
+### Data considerations before cleaning and preprocessing
+
+#### Grain and missing values
+
+- Row counts and order counts measure different things at item grain. Define how order-level attributes are aggregated by `order_id`; do not repeatedly sum or count the same order information across its items.
+- An unmatched key is a relationship issue. A matched product can still lack weight or dimensions; missing attributes do not imply a failed join.
+- Timestamps use `datetime64[us]` without a declared timezone. Merge does not convert timezones, calculate lead times, or handle holidays.
+- Preserve string ZIP/ID dtypes when reloading. Converting ZIP codes to numbers discards leading zeros that cannot reliably be reconstructed.
+- `customer_unique_id` is excluded from this schema. Do not assume `customer_id` identifies the same person across multiple orders.
+- Available columns depend on the **resolved sources**, including bridges. For example, `order_items + customers` includes orders timestamps; `order_items + products` does not contain customer state or delivery timestamps.
+- Rules for retaining delivered orders, excluding missing/negative time segments, identifying lateness, or classifying routes belong to the relevant downstream stage. Merge does not apply them.
+
+#### Interpreting validation information
+
+`Current rows`, `Current columns`, and actual dtypes describe the DataFrame currently inspected. `Recorded status` reflects checks at merge time. If the DataFrame is subsequently modified, revalidate it using `validate_table_contract()` where appropriate; the report does not certify the modified data automatically.
+
+`Matched left rows` counts input left rows, not expanded output rows. `Row count checked = Not applicable` means that row-preservation rule does not apply, rather than a failed check. `Unique key component` identifies a component of one composite key, not an individual uniqueness constraint.
+
+#### Selected sources
+
+| API name | File under `data/raw` | Raw rows | Selected columns |
+|---|---|---:|---:|
+| `order_items` | `olist_order_items_dataset.csv` | 112,650 | 7 |
+| `orders` | `olist_orders_dataset.csv` | 99,441 | 8 |
+| `customers` | `olist_customers_dataset.csv` | 99,441 | 4 |
+| `products` | `olist_products_dataset.csv` | 32,951 | 6 |
+| `sellers` | `olist_sellers_dataset.csv` | 3,095 | 4 |
+
+Column counts refer to the merge contract, not every column in the source CSV. Payments, reviews, geolocation, and category translation are outside the five-source standard registry.
+
+<a id="schema"></a>
+#### Canonical schema and column groups
+
+Combination descriptions use the following schema groups. Concatenating groups in the stated order gives the **exact output names and column order**, without duplicated join keys.
+
+| Position | Column | Canonical dtype | Group |
+|---:|---|---|---|
+| 1 | `order_id` | `string` | I |
+| 2 | `order_item_id` | `int64` | I |
+| 3 | `product_id` | `string` | I |
+| 4 | `seller_id` | `string` | I |
+| 5 | `shipping_limit_date` | `datetime64[us]` | I |
+| 6 | `price` | `float64` | I |
+| 7 | `freight_value` | `float64` | I |
+| 8 | `customer_id` | `string` | O |
+| 9 | `order_status` | `string` | O |
+| 10 | `order_purchase_timestamp` | `datetime64[us]` | O |
+| 11 | `order_approved_at` | `datetime64[us]` | O |
+| 12 | `order_delivered_carrier_date` | `datetime64[us]` | O |
+| 13 | `order_delivered_customer_date` | `datetime64[us]` | O |
+| 14 | `order_estimated_delivery_date` | `datetime64[us]` | O |
+| 15 | `customer_zip_code_prefix` | `string` | C |
+| 16 | `customer_city` | `string` | C |
+| 17 | `customer_state` | `string` | C |
+| 18 | `product_category_name` | `string` | P |
+| 19 | `product_weight_g` | `float64` | P |
+| 20 | `product_length_cm` | `float64` | P |
+| 21 | `product_height_cm` | `float64` | P |
+| 22 | `product_width_cm` | `float64` | P |
+| 23 | `seller_zip_code_prefix` | `string` | S |
+| 24 | `seller_city` | `string` | S |
+| 25 | `seller_state` | `string` | S |
+
+- **I:** the first seven columns, in order.
+- **O:** seven additional orders columns, from customer_id through order_estimated_delivery_date.
+- **C:** three additional customer columns, ZIP through state.
+- **P:** five additional product columns, category through width.
+- **S:** three additional seller columns, ZIP through state.
+
+For example, `I → O → P` has 19 columns. The order-level `orders + customers` schema is `order_id → O → C`, with 11 columns. Full is `I → O → C → P → S`.
+
+Full and every item-based combination use **one composite key**, `(order_id, order_item_id)`; individual components need not be unique. The orders + customers key is order_id. Full requires non-missing order_id, order_item_id, product_id, seller_id, and customer_id. Other attributes may be missing. String ZIP codes preserve leading zeros; timestamps retain microsecond resolution.
+
+## 6. Troubleshooting
+
 <a id="errors"></a>
-## 8. Troubleshooting
+### Troubleshooting
 
 | Symptom | Action |
 |---|---|
@@ -831,7 +843,7 @@ except Exception as error:
 | Parquet failure | Read the specific cause; CSV fallback is available. Follow engine installation guidance only for an engine failure; handle permissions or corruption as reported |
 | Both formats fail | Review each format's error and check file/schema/path/read or write permissions |
 | An older Parquet file was read | Select file_format="csv" to read the intended CSV output |
-| Custom name absent from registry | Supply its matching schema; it can be reconstructed as in section 6.1 |
+| Custom name absent from registry | Supply its matching schema; it can be reconstructed as in the product dimensions custom join example |
 | Full baseline differs | Check the raw version and resolved sources rather than forcing rows to match |
 
 These workflows process data and display results. Documentation is maintained separately and is not updated by the pipeline or notebook. Test commands and coverage are documented in the [technical reference](Technical_Reference.md#testing).

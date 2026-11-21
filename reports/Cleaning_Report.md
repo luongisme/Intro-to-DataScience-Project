@@ -1,22 +1,15 @@
 # Data Cleaning Report
 
-## Dataset scope
-
-This report documents the cleaning of the full `merged_order_items` dataset in `data/interim` and the resulting `cleaned_order_items` dataset in `data/processed`. Each row represents one order item, identified by `(order_id, order_item_id)`. Figures use the same data and plotting functions as `notebooks/02_data_cleaning.ipynb`.
-
-Counts use commas as thousands separators and periods for decimals. Percentages use the denominator stated in each table or figure. Item, order, product, customer-record and seller counts refer to distinct units of observation. Diagnostic groups may overlap.
+This report describes the cleaning rules, their observed effects and the retained dataset. See the [notebook](../notebooks/02_data_cleaning.ipynb), [User Guide](../docs/Cleaning/User_Guide.md) and [Technical Reference](../docs/Cleaning/Technical_Reference.md).
 
 ## Contents
 
-1. [Dataset dimensions](#1-dataset-dimensions)
-2. [Order filtering](#2-order-filtering)
-3. [Value changes](#3-value-changes)
-4. [Remaining missing values](#4-remaining-missing-values)
-5. [Numeric distributions](#5-numeric-distributions)
-6. [Temporal coverage and approval hours](#6-temporal-coverage-and-approval-hours)
-7. [Product categories and geography](#7-product-categories-and-geography)
+1. [Scope and key result](#1-scope-and-key-result)
+2. [Data and definitions](#2-data-and-definitions)
+3. [Findings by workflow stage](#3-findings-by-workflow-stage)
+4. [Conclusions and limitations](#4-conclusions-and-limitations)
 
-## 1. Dataset dimensions
+## 1. Scope and key result
 
 | Unit of observation | Full input | After cleaning |
 |---|---:|---:|
@@ -33,9 +26,31 @@ The intermediate inspection table preserves all input rows and adds three qualit
 
 `customer_id` identifies a customer record linked to a purchase. It does not represent a unique person across purchases.
 
-## 2. Order filtering
+## 2. Data and definitions
 
-![Figure 1 — Order retention and sequential exclusions](../figures/clean/figure_01_filtering.png)
+This report documents the cleaning of the full `merged_order_items` dataset in `data/interim` and the resulting `cleaned_order_items` dataset in `data/processed`. Each row represents one order item, identified by `(order_id, order_item_id)`. Figures use the same data and plotting functions as `notebooks/02_data_cleaning.ipynb`.
+
+Counts use commas as thousands separators and periods for decimals. Percentages use the denominator stated in each table or figure. Item, order, product, customer-record and seller counts refer to distinct units of observation. Diagnostic groups may overlap.
+
+EDA and Cleaning both read the full merged dataset. EDA identified incomplete timestamps, reversed event times, nonpositive weights, future shipping deadlines and repeated city whitespace. Cleaning applies the selected eligibility and value-handling rules to the original merged input.
+
+## 3. Findings by workflow stage
+
+EDA observations informed the selected rules. The sequential exclusion counts below depend on their order, so they do not equal all independently affected orders.
+
+| EDA observation | Cleaning rule | Observed effect |
+|---|---|---|
+| Non-delivered orders remain in the merged input | Retain delivered orders for this analysis dataset | 2,188 orders removed at the first step |
+| Some required event timestamps are missing | Exclude orders missing any of the five required timestamps | 23 additional orders removed |
+| Some core events are recorded out of order | Flag reversed adjacent timestamps and exclude the complete order | 1,373 additional orders removed |
+| Four products have zero weight | Replace observed nonpositive physical cells with null and exclude affected orders | Eight weight cells changed; six orders removed |
+| Some deadlines fall beyond observed purchase years | Flag deadlines before purchase or beyond the full-input latest purchase year | One additional order removed at the deadline step |
+| Three seller city names have repeated internal whitespace | Normalize city whitespace | 56 input cells changed, including 54 retained cells |
+
+<a id="2-order-filtering"></a>
+### Whole-order eligibility
+
+![Figure 1 — Order retention and sequential exclusions](../outputs/figures/Cleaning/figure_01_filtering.png)
 
 *Figure 1. Of 98,666 input orders, 95,075 are retained (96.36%). The lower panel counts newly excluded orders at each rule. Each excluded order contributes once to the total.*
 
@@ -56,9 +71,11 @@ In the full input, 1,359 orders have Carrier Handoff before Approved and 23 have
 
 The status rule selects completed deliveries. The deadline rule excludes orders flagged by the selected review policy for deadlines beyond the observed purchase years.
 
-## 3. Value changes
+<a id="3-value-changes"></a>
+### Value changes
 
-### 3.1. City names
+<a id="31-city-names"></a>
+#### City names
 
 Before filtering, repeated internal whitespace is collapsed in **56 `seller_city` cells across 3 sellers**. Of these, **54 changed cells** remain in the final dataset. No `customer_city` values change.
 
@@ -70,19 +87,22 @@ Before filtering, repeated internal whitespace is collapsed in **56 `seller_city
 
 Comparing retained items with their source rows, only these 54 `seller_city` cells differ. **Values in the other 24 columns remain unchanged.** Date, currency and text formatting in notebook previews affects display only.
 
-### 3.2. Physical measurements
+<a id="32-physical-measurements"></a>
+#### Physical measurements
 
 Preparation replaces **8 nonpositive weight values** with nulls, affecting **4 products across 6 orders**. All six orders are subsequently excluded. Weight has 18 nulls in the source, 26 after preparation and **18 in the final dataset**.
 
 Length, height and width have no nonpositive values requiring replacement; each retains 18 source nulls. The final dataset has no observed physical measurements `<= 0`. Missing measurements are not imputed.
 
-### 3.3. Price and freight
+<a id="33-price-and-freight"></a>
+#### Price and freight
 
 Price and freight values remain unchanged for every retained item. The final dataset contains **370 items with zero freight**, compared with 383 in the full input. The difference of 13 items results from order exclusions. Zero freight and large observed values on retained items are preserved.
 
-## 4. Remaining missing values
+<a id="4-remaining-missing-values"></a>
+### Remaining missing values
 
-![Figure 2 — Missing values before and after cleaning](../figures/clean/figure_02_missingness.png)
+![Figure 2 — Missing values before and after cleaning](../outputs/figures/Cleaning/figure_02_missingness.png)
 
 *Figure 2. Percentages use separate denominators: 112,650 input items and 108,571 retained items. Labels show both the missing count and percentage. The four physical measurements share the same missing counts and are grouped into one row; 18 is the count for each column, not their combined total.*
 
@@ -97,9 +117,10 @@ Category is missing for **1.4055% of retained items** and **1.8259% of retained 
 
 Each physical measurement is missing for **0.0166% of retained items**. Its missing count remains 18, while its rate increases from 0.0160% because fewer items remain after filtering. These are retained source nulls, with no imputation. All other columns in the final dataset have no nulls.
 
-## 5. Numeric distributions
+<a id="5-numeric-distributions"></a>
+### Numeric distributions
 
-![Figure 3 — Numeric distributions in the retained dataset](../figures/clean/figure_03_numeric.png)
+![Figure 3 — Numeric distributions in the retained dataset](../outputs/figures/Cleaning/figure_03_numeric.png)
 
 *Figure 3. Price and freight use 108,571 items. Weight uses 31,875 products, of which 31,873 have finite values and 2 have missing values. The upper panels show the full range; the lower panels show the 1st–99th percentile window. Observations outside these windows remain in the dataset and the full-range panels.*
 
@@ -114,9 +135,10 @@ Each physical measurement is missing for **0.0166% of retained items**. Its miss
 
 Product statistics use one record per product, avoiding repeated counts based on the number of items sold. The display windows span **9.99–889 BRL** for price, **4.45–83.83 BRL** for freight and approximately **75–22,507 g** for weight. These windows affect the plots only; no observations are removed or clipped by percentile.
 
-## 6. Temporal coverage and approval hours
+<a id="6-temporal-coverage-and-approval-hours"></a>
+### Temporal coverage and approval hours
 
-![Figure 4 — Purchase months and approval hours after cleaning](../figures/clean/figure_04_calendar.png)
+![Figure 4 — Purchase months and approval hours after cleaning](../outputs/figures/Cleaning/figure_04_calendar.png)
 
 *Figure 4. Both panels use 95,075 distinct orders. The month axis includes months with zero orders. Approval hours are extracted from the stored `order_approved_at` timestamps, without timezone conversion or work-shift grouping.*
 
@@ -124,20 +146,29 @@ Purchase months span **September 2016 through August 2018**. **November 2016 has
 
 The panels describe order counts by recorded purchase month and approval hour.
 
-## 7. Product categories and geography
+<a id="7-product-categories-and-geography"></a>
+### Product categories and geography
 
-### 7.1. Product categories
+<a id="71-product-categories"></a>
+#### Product categories
 
-![Figure 5 — Category frequencies at product level](../figures/clean/figure_05_categories.png)
+![Figure 5 — Category frequencies at product level](../outputs/figures/Cleaning/figure_05_categories.png)
 
 *Figure 5. The denominator is all 31,875 retained products. The ten most frequent non-missing categories are shown individually; remaining categories are grouped as Other, and missing categories are shown separately. Other combines multiple source categories.*
 
 `cama_mesa_banho` is the most frequent individual category, with **2,948 products (9.2486%)**. Other contains **11,181 products**, and Missing contains **582 products**. Categories outside the top ten remain in the dataset and the notebook's complete frequency table.
 
-### 7.2. Customer and seller states
+<a id="72-customer-and-seller-states"></a>
+#### Customer and seller states
 
-![Figure 6 — State frequencies at customer-record and seller levels](../figures/clean/figure_06_geography.png)
+![Figure 6 — State frequencies at customer-record and seller levels](../outputs/figures/Cleaning/figure_06_geography.png)
 
 *Figure 6. The left panel uses 95,075 customer records identified by `customer_id`; the right panel uses 2,959 sellers. Customer records do not represent unique people. Each panel shows the ten most frequent states and groups the remaining states as Other.*
 
 SP accounts for **39,900 customer records (41.9669%)** and **1,760 sellers (59.4796%)** using the respective denominators. The panels use separate units of observation and count scales. States outside the top ten remain in the dataset.
+
+## 4. Conclusions and limitations
+
+The retained dataset contains 95,075 delivered orders and 108,571 item rows. Every retained order keeps its complete set of source items. The retained item values differ from the input only in 54 seller-city whitespace cells; source nulls in optional product attributes remain available for downstream work.
+
+The deadline rule uses the latest purchase year in the full input as a review criterion. Values outside the EDA IQR limits and zero freight remain in the dataset. These results describe the reference input and the selected cleaning policy.

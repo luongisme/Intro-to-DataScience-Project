@@ -1,22 +1,20 @@
 # Cleaning Technical Reference
 
-This reference documents cleaning contracts, whole-order eligibility, function interfaces, display helpers and storage integration. For executable examples, see the [Cleaning User Guide](User_Guide.md). Dataset observations are maintained in the [Cleaning Report](../../reports/Cleaning/Cleaning_Report.md).
-
-Paths are relative to the repository root unless linked. The workflow separates preparation, diagnostics, order filtering, output validation and explicit persistence. It does not create analysis or machine-learning features.
+This reference describes the cleaning workflow, data contracts, interfaces, rules and verification. See the [notebook](../../notebooks/02_data_cleaning.ipynb), [User Guide](User_Guide.md) and [Cleaning Report](../../reports/Cleaning_Report.md).
 
 ## Contents
 
-1. [Architecture](#1-architecture)
+1. [Architecture and execution flow](#1-architecture-and-execution-flow)
 2. [Data contracts](#2-data-contracts)
-3. [Execution flow](#3-execution-flow)
-4. [Workflow entry points](#4-workflow-entry-points)
-5. [Transformations and eligibility](#5-transformations-and-eligibility)
-6. [Validation reference](#6-validation-reference)
-7. [Presentation and visual review](#7-presentation-and-visual-review)
-8. [Storage and artifacts](#8-storage-and-artifacts)
-9. [Testing and maintenance](#9-testing-and-maintenance)
+3. [Interfaces by workflow stage](#3-interfaces-by-workflow-stage)
+4. [Rules and calculations](#4-rules-and-calculations)
+5. [Outputs and storage](#5-outputs-and-storage)
+6. [Validation, tests and extension](#6-validation-tests-and-extension)
 
-## 1. Architecture
+## 1. Architecture and execution flow
+
+<a id="1-architecture"></a>
+### Architecture
 
 ```text
 src/cleaning/
@@ -49,40 +47,8 @@ tests/cleaning/
 
 `__init__.py` re-exports workflow functions, cleaning transforms, selected validators, display formatting and the clean name/schema. Baseline/input-validation helpers and plotting functions are imported from their defining modules. Plotting is not re-exported through the package root, avoiding an eager Matplotlib import for loader-only use.
 
-## 2. Data contracts
-
-Source: [`src/cleaning/schema.py`](../../src/cleaning/schema.py). This module declares constants and schemas; it defines no functions.
-
-| Contract | Columns and requirements |
-|---|---|
-| `FULL_MERGE_SCHEMA` | Registered 25-column source, imported from merge; item key `(order_id, order_item_id)` |
-| `FLAGGED_ORDER_ITEMS_SCHEMA` | Original 25 columns plus three non-null bool flags; all items/statuses retained at inspection stage |
-| `CLEANED_ORDER_ITEMS_SCHEMA` | Original 25 columns/order/dtypes; same item key; additionally non-null status and five required timestamps |
-| `CLEANED_DATASET_NAME` | `cleaned_order_items` |
-| `REQUIRED_TIMESTAMPS` | Purchase, Approved, Carrier Handoff, Customer Delivery and Estimated Delivery |
-| `QUALITY_FLAG_COLUMNS` | `has_invalid_physical_measurement`, `has_invalid_timeline`, `needs_deadline_review` |
-
-The final dtype declarations are **12 string, 6 datetime64[us], 6 float64 and 1 int64**. Canonical field names remain unchanged. ZIP prefixes remain strings. The final schema permits optional product-category/physical nulls. Behavioral eligibility, complete-order retention and allowed values are enforced by `validate_cleaning_output()`, beyond the structural schema checks.
-
-Input validation rejects an empty source. A nonempty valid source may produce an empty retained result; final validation, figures and storage support that result.
-
-### 2.1. Policy constants
-
-| Module / declaration | Meaning |
-|---|---|
-| `text.CITY_COLUMNS` | Customer/seller city fields with their entity IDs |
-| `text.STRING_ID_COLUMNS`, `TEXT_PATTERNS` | Four 32-character lowercase hexadecimal IDs and two five-ASCII-digit ZIP prefixes |
-| `text.STATE_CODES`, `ORDER_STATUSES`, `TEXT_DOMAINS` | Fixed exact source domains: 27 state codes and eight statuses, including raw `created` |
-| `measurements.PHYSICAL_COLUMNS` | Weight, length, height and width |
-| `measurements.INVALID_PHYSICAL_FLAG` | `has_invalid_physical_measurement` |
-| `timeline.CORE_TIMESTAMP_COLUMNS` | Purchase → Approved → Carrier Handoff → Customer Delivery |
-| `timeline.ADJACENT_TIMESTAMP_CHECKS` | Approved before purchase; carrier before approval; customer before carrier |
-| `timeline.INVALID_TIMELINE_FLAG`, `DEADLINE_REVIEW_FLAG` | Names of the temporal quality flags |
-| `filtering.EXCLUSION_REASONS` | Status → required timestamps → chronology → physical values → deadlines |
-
-City cleanup preserves case/spelling/nulls. Category text is not translated or standardized in the stored data. Deadline-year review uses the latest purchase year in the full input, not an order-specific year or a reference recomputed after exclusions.
-
-## 3. Execution flow
+<a id="3-execution-flow"></a>
+### Execution flow
 
 ```text
 full merged input
@@ -103,11 +69,49 @@ Missing timestamps are not chronology violations by themselves. They are unknown
 
 The notebook calls these reusable interfaces and displays their evidence. Its local `find_project_root(start_path: Path) -> Path` searches the supplied directory and parents for `src/` plus `requirements.txt`, raising `FileNotFoundError` if none matches. It does not change the working directory.
 
-## 4. Workflow entry points
+## 2. Data contracts
+
+Source: [`src/cleaning/schema.py`](../../src/cleaning/schema.py). This module declares constants and schemas; it defines no functions.
+
+| Contract | Columns and requirements |
+|---|---|
+| `FULL_MERGE_SCHEMA` | Registered 25-column source, imported from merge; item key `(order_id, order_item_id)` |
+| `FLAGGED_ORDER_ITEMS_SCHEMA` | Original 25 columns plus three non-null bool flags; all items/statuses retained at inspection stage |
+| `CLEANED_ORDER_ITEMS_SCHEMA` | Original 25 columns/order/dtypes; same item key; additionally non-null status and five required timestamps |
+| `CLEANED_DATASET_NAME` | `cleaned_order_items` |
+| `REQUIRED_TIMESTAMPS` | Purchase, Approved, Carrier Handoff, Customer Delivery and Estimated Delivery |
+| `QUALITY_FLAG_COLUMNS` | `has_invalid_physical_measurement`, `has_invalid_timeline`, `needs_deadline_review` |
+
+The final dtype declarations are **12 string, 6 datetime64[us], 6 float64 and 1 int64**. Canonical field names remain unchanged. ZIP prefixes remain strings. The final schema permits optional product-category/physical nulls. Behavioral eligibility, complete-order retention and allowed values are enforced by `validate_cleaning_output()`, beyond the structural schema checks.
+
+Input validation rejects an empty source. A nonempty valid source may produce an empty retained result; final validation, figures and storage support that result.
+
+<a id="21-policy-constants"></a>
+#### Policy constants
+
+| Module / declaration | Meaning |
+|---|---|
+| `text.CITY_COLUMNS` | Customer/seller city fields with their entity IDs |
+| `text.STRING_ID_COLUMNS`, `TEXT_PATTERNS` | Four 32-character lowercase hexadecimal IDs and two five-ASCII-digit ZIP prefixes |
+| `text.STATE_CODES`, `ORDER_STATUSES`, `TEXT_DOMAINS` | Fixed exact source domains: 27 state codes and eight statuses, including raw `created` |
+| `measurements.PHYSICAL_COLUMNS` | Weight, length, height and width |
+| `measurements.INVALID_PHYSICAL_FLAG` | `has_invalid_physical_measurement` |
+| `timeline.CORE_TIMESTAMP_COLUMNS` | Purchase → Approved → Carrier Handoff → Customer Delivery |
+| `timeline.ADJACENT_TIMESTAMP_CHECKS` | Approved before purchase; carrier before approval; customer before carrier |
+| `timeline.INVALID_TIMELINE_FLAG`, `DEADLINE_REVIEW_FLAG` | Names of the temporal quality flags |
+| `filtering.EXCLUSION_REASONS` | Status → required timestamps → chronology → physical values → deadlines |
+
+City cleanup preserves case/spelling/nulls. Category text is not translated or standardized in the stored data. Deadline-year review uses the latest purchase year in the full input, not an order-specific year or a reference recomputed after exclusions.
+
+## 3. Interfaces by workflow stage
+
+<a id="4-workflow-entry-points"></a>
+### Workflow entry points
 
 Source: [`src/cleaning/workflow.py`](../../src/cleaning/workflow.py). Inputs below are pandas DataFrames; frame-transforming functions return independent data rather than mutating the source.
 
-### `inspect_order_items(df) -> (inspected, details)`
+<a id="inspect_order_itemsdf---inspected-details"></a>
+#### `inspect_order_items(df) -> (inspected, details)`
 
 **Purpose:** prepare and inspect the complete valid 25-column full merge, before order exclusions.
 
@@ -125,7 +129,8 @@ Source: [`src/cleaning/workflow.py`](../../src/cleaning/workflow.py). Inputs bel
 
 **Behavior/errors:** validates the source, applies the four preparation/flagging functions in order, verifies allowed changes and compares the baseline. Raises on invalid input, overwritten/inconsistent flags or unapproved changes. Does not load, display or save data.
 
-### `clean_order_items(df) -> (cleaned, details)`
+<a id="clean_order_itemsdf---cleaned-details"></a>
+#### `clean_order_items(df) -> (cleaned, details)`
 
 **Purpose:** execute the complete validated workflow on the original full input.
 
@@ -141,7 +146,8 @@ Source: [`src/cleaning/workflow.py`](../../src/cleaning/workflow.py). Inputs bel
 
 **Behavior/errors:** calls inspection, filters entire orders, removes flags and validates the exact retained result independently against source. Keeps original index labels and relative row order. Does not load, display or save data. Do not pass the 28-column inspection result or a previously filtered subset as the source for reproducing the full workflow.
 
-### `save_cleaned_data(df, output_dir=None) -> Path`
+<a id="save_cleaned_datadf-output_dirnone---path"></a>
+#### `save_cleaned_data(df, output_dir=None) -> Path`
 
 **Purpose:** save the final 25-column result under `CLEANED_DATASET_NAME`.
 
@@ -149,9 +155,11 @@ Source: [`src/cleaning/workflow.py`](../../src/cleaning/workflow.py). Inputs bel
 
 **Returns/behavior:** actual successful Parquet or CSV path. Delegates structural validation, atomic writes, fallback and error guidance to the shared saver. This validates the clean schema; the source-based cohort check remains the responsibility of `clean_order_items()` or `validate_cleaning_output()`. A custom directory supports isolated runs. No metadata sidecar or report is written.
 
-## 5. Transformations and eligibility
+<a id="5-transformations-and-eligibility"></a>
+### Transformations and eligibility
 
-### 5.1. Text and measurements
+<a id="51-text-and-measurements"></a>
+#### Text and measurements
 
 Sources: [`text.py`](../../src/cleaning/text.py), [`measurements.py`](../../src/cleaning/measurements.py).
 
@@ -163,7 +171,8 @@ Sources: [`text.py`](../../src/cleaning/text.py), [`measurements.py`](../../src/
 
 Text inspection does not coerce, change case, infer codes or repair values. `validate_cleaning_input()` rejects invalid observed formats/domains; optional missing attributes are counted separately. Measurement preparation preserves pre-existing nulls, other values, dtypes, index and order. Statistical tails are not invalid-measurement rules.
 
-### 5.2. Timeline and deadlines
+<a id="52-timeline-and-deadlines"></a>
+#### Timeline and deadlines
 
 Source: [`timeline.py`](../../src/cleaning/timeline.py).
 
@@ -176,7 +185,8 @@ Equality is allowed. Missing endpoints remain unknown in summaries and do not al
 
 No timestamp replacement, order-level deadline selection, business-day durations, lateness labels or time-slot features occur. Calls must not silently overwrite existing quality flags.
 
-### 5.3. Whole-order eligibility
+<a id="53-whole-order-eligibility"></a>
+#### Whole-order eligibility
 
 Source: [`filtering.py`](../../src/cleaning/filtering.py).
 
@@ -192,7 +202,8 @@ An order fails for non-delivered/missing status, missing required timestamp, or 
 
 Supports empty inspected input or an empty retained result. Rejects an incompatible inspection schema. It does not recalculate flags, display, select final columns or save.
 
-## 6. Validation reference
+<a id="6-validation-reference"></a>
+### Validation interfaces
 
 Source: [`validation.py`](../../src/cleaning/validation.py).
 
@@ -207,9 +218,11 @@ Source: [`validation.py`](../../src/cleaning/validation.py).
 
 Allowed-change/final validators compare against the supplied original source; separately check that source against its earlier baseline. In-memory validation preserves original index labels, but the storage contract persists item keys and row order rather than pandas labels. Assertions and validation exceptions are failures to investigate, not instructions to cast or discard data until checks pass.
 
-## 7. Presentation and visual review
+<a id="7-presentation-and-visual-review"></a>
+### Presentation and visual review
 
-### 7.1. Display formatting
+<a id="71-display-formatting"></a>
+#### Display formatting
 
 Source: [`presentation.py`](../../src/cleaning/presentation.py).
 
@@ -222,7 +235,8 @@ Source: [`presentation.py`](../../src/cleaning/presentation.py).
 
 `COLUMN_LABELS`, `EXCLUSION_LABELS`, `DISPLAY_ORDER`, `CURRENCY_COLUMNS`, `DATETIME_COLUMNS` and `PERCENT_COLUMNS` control display only. Canonical dataset names/values remain unchanged. Source table fields are grouped for readable previews; diagnostic columns not in the display ordering retain their relative order.
 
-### 7.2. Figure builder
+<a id="72-figure-builder"></a>
+#### Figure builder
 
 Source: [`plots.py`](../../src/cleaning/plots.py).
 
@@ -239,7 +253,8 @@ Source: [`plots.py`](../../src/cleaning/plots.py).
 
 The `tables` mapping contains `missingness`, `missingness_display`, `numeric`, `purchase_months`, `approval_hours`, `categories`, `category_display`, `customer_states`, `customer_state_display`, `seller_states`, `seller_state_display`. Numeric tables include all six measurements even though the figure plots three. Complete frequency tables remain available beside compact displays.
 
-### 7.3. Plot/profile interfaces
+<a id="73-plotprofile-interfaces"></a>
+#### Plot/profile interfaces
 
 | Signature | Inputs / purpose | Returns / constraints |
 |---|---|---|
@@ -253,7 +268,11 @@ The `tables` mapping contains `missingness`, `missingness_display`, `numeric`, `
 
 Color constants `BEFORE_COLOR`, `AFTER_COLOR`, `REMOVED_COLOR` distinguish source, retained and excluded counts. Callers own figure lifetime: the notebook closes pyplot registrations before explicitly displaying the returned Figure objects. No image or Markdown file is written by these functions.
 
-## 8. Storage and artifacts
+## 4. Rules and calculations
+
+The workflow applies its rules to the full merged input before excluding complete orders. City whitespace is normalized while source spelling and case are preserved. A nonpositive physical measurement is replaced with a null and flags its item; a pre-existing null remains distinct from a changed value. Chronology and deadline checks record flags without replacing timestamps. The eligibility stage then removes an entire order when any of its items triggers an exclusion reason. The interfaces above define each rule and diagnostic table. EDA uses the same merged input to identify patterns that inform these rules.
+
+## 5. Outputs and storage
 
 The shared `load_data(name, stage="raw", **kwargs) -> DataFrame` dispatches processed reads through the registered `CLEANED_ORDER_ITEMS_SCHEMA`. Saved-stage options are `file_format` and optional `schema`; unsupported parser options and conflicting registered-schema overrides are rejected. See the [Merge storage reference](../Merge/Technical_Reference.md#io-reference) for shared codec/atomic implementation details.
 
@@ -262,8 +281,8 @@ The shared `load_data(name, stage="raw", **kwargs) -> DataFrame` dispatches proc
 | Full source | `data/interim/merged_order_items.parquet` or `.csv`; produced by merge |
 | Final clean data | `data/processed/cleaned_order_items.parquet` or `.csv`; explicit save only |
 | Intermediate flags and diagnostics | In-memory return values; not persisted as metadata sidecars |
-| Report | `reports/Cleaning/Cleaning_Report.md`; separately maintained |
-| Report images | `reports/figures/clean/`; exported separately |
+| Report | `reports/Cleaning_Report.md`; separately maintained |
+| Report images | `outputs/figures/Cleaning/`; exported separately |
 | Usage and technical docs | `docs/Cleaning/`; separately maintained |
 
 Reads default to Parquet with CSV fallback. Explicit CSV announces the selection and reads CSV directly, propagating its failure. Writes attempt Parquet first then CSV; failure of both attempts reports both causes. The successful saver path determines which format to read for a roundtrip; default reads do not select by modification time or metadata. Files of the other format may still exist.
@@ -286,7 +305,7 @@ This snippet assumes `saved_path` came from `save_cleaned_data()`. The processed
 
 The notebook's explicit save/reload cell can replace the clean dataset; it never writes report text, guide/reference content or report images.
 
-## 9. Testing and maintenance
+## 6. Validation, tests and extension
 
 | Test module | Coverage |
 |---|---|

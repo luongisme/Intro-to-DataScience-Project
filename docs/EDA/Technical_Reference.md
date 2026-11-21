@@ -1,22 +1,18 @@
 # EDA Technical Reference
 
-This reference documents the pre-cleaning inspection architecture, data contracts, function interfaces and execution dependencies. For executable examples, see the [EDA User Guide](User_Guide.md). Dataset observations belong in the [EDA Report](../../reports/EDA/EDA_Report.md).
-
-Paths are relative to the repository root unless linked. EDA operates on in-memory data and does not clean, persist datasets or generate documentation.
+This reference describes the pre-cleaning inspection contracts, calculations and interfaces. See the [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb), [User Guide](User_Guide.md) and [Report](../../reports/EDA_Report.md).
 
 ## Contents
 
-1. [Architecture](#1-architecture)
-2. [Contracts and conventions](#2-contracts-and-conventions)
-3. [Execution flow](#3-execution-flow)
-4. [Profiling reference](#4-profiling-reference)
-5. [Domain checks](#5-domain-checks)
-6. [Notebook-facing workflow](#6-notebook-facing-workflow)
-7. [Plot primitives](#7-plot-primitives)
-8. [Artifacts and testing](#8-artifacts-and-testing)
-9. [Maintenance and failure handling](#9-maintenance-and-failure-handling)
+1. [Architecture and execution flow](#1-architecture-and-execution-flow)
+2. [Data contracts](#2-data-contracts)
+3. [Interfaces by workflow stage](#3-interfaces-by-workflow-stage)
+4. [Rules and calculations](#4-rules-and-calculations)
+5. [Outputs and storage](#5-outputs-and-storage)
+6. [Validation, tests and extension](#6-validation-tests-and-extension)
 
-## 1. Architecture
+## 1. Architecture and execution flow
+
 
 ```text
 src/eda/
@@ -46,32 +42,6 @@ Imports from `src.eda` do not re-export the functions below. Import from the def
 
 Importing shared `src.paths` can create configured data/output directories. That shared initialization does not imply that EDA writes datasets, figures or report content.
 
-## 2. Contracts and conventions
-
-### 2.1. Full input and source-grain views
-
-The notebook expects the registered 25-column full merge at item grain with key `(order_id, order_item_id)`. Its schema and typed reader are defined by the merge layer. The EDA helpers themselves validate the columns and types needed for each operation; `require_columns()` alone is not a full schema validator.
-
-`SOURCE_SPECS` in `profiling.py` reuses the five merge source specifications. `build_entity_views()` returns `order_items`, `orders`, `customers`, `products` and `sellers`, retaining each source's selected columns and dtypes. Before collapsing repeated source values, it requires valid keys and consistent attributes. Views cover observed merged entities only.
-
-### 2.2. Percentage and diagnostic rules
-
-| Concept | Contract |
-|---|---|
-| Missing versus blank | Missing uses `isna()`; only actual empty/whitespace strings are blank |
-| Repeated keys | Valid repeats of entity IDs are expected at item grain; item keys must remain unique for entity views |
-| Attribute conflict | Different values within one ID, including value versus null; all-null attributes are consistent but incomplete |
-| Numeric statistics | Real finite values only; identifiers, ZIP codes, bool and complex data are not measurements |
-| Numeric spread | Linear quantiles; sample standard deviation (`ddof=1`); 1.5-IQR limits are descriptive |
-| Frequency percentages | All input rows, including special Missing/Blank groups |
-| Conditional missingness | Missing rows of the conditioning column; a zero denominator yields NaN |
-| Nullable conditions | Missing endpoints remain unknown; evaluated and all-row percentages are separate |
-| Timestamp precision | Stored clock; estimated-before-purchase uses calendar dates |
-| Selection/window limits | Limit display or temporary diagnostic views without changing the input |
-
-Index alignment is part of grouped-condition validation. Keep upstream objects from the same input and preserve row order. Some workflow results intentionally reference earlier inspection frames; treat all such references as read-only.
-
-## 3. Execution flow
 
 ```text
 load_data("merged_order_items", stage="interim")
@@ -89,11 +59,44 @@ The notebook's local `find_project_root(start_path: Path) -> Path` searches the 
 
 No full-pipeline command or persistent EDA result object is defined. The notebook orchestrates named return values. Run it from top to bottom to reproduce all inspections.
 
-## 4. Profiling reference
+## 2. Data contracts
+
+
+<a id="21-full-input-and-source-grain-views"></a>
+### Full input and source-grain views
+
+The notebook expects the registered 25-column full merge at item grain with key `(order_id, order_item_id)`. Its schema and typed reader are defined by the merge layer. The EDA helpers themselves validate the columns and types needed for each operation; `require_columns()` alone is not a full schema validator.
+
+`SOURCE_SPECS` in `profiling.py` reuses the five merge source specifications. `build_entity_views()` returns `order_items`, `orders`, `customers`, `products` and `sellers`, retaining each source's selected columns and dtypes. Before collapsing repeated source values, it requires valid keys and consistent attributes. Views cover observed merged entities only.
+
+<a id="22-percentage-and-diagnostic-rules"></a>
+### Percentage and diagnostic rules
+
+| Concept | Contract |
+|---|---|
+| Missing versus blank | Missing uses `isna()`; only actual empty/whitespace strings are blank |
+| Repeated keys | Valid repeats of entity IDs are expected at item grain; item keys must remain unique for entity views |
+| Attribute conflict | Different values within one ID, including value versus null; all-null attributes are consistent but incomplete |
+| Numeric statistics | Real finite values only; identifiers, ZIP codes, bool and complex data are not measurements |
+| Numeric spread | Linear quantiles; sample standard deviation (`ddof=1`); 1.5-IQR limits are descriptive |
+| Frequency percentages | All input rows, including special Missing/Blank groups |
+| Conditional missingness | Missing rows of the conditioning column; a zero denominator yields NaN |
+| Nullable conditions | Missing endpoints remain unknown; evaluated and all-row percentages are separate |
+| Timestamp precision | Stored clock; estimated-before-purchase uses calendar dates |
+| Selection/window limits | Limit display or temporary diagnostic views without changing the input |
+
+Index alignment is part of grouped-condition validation. Keep upstream objects from the same input and preserve row order. Some workflow results intentionally reference earlier inspection frames; treat all such references as read-only.
+
+## 3. Interfaces by workflow stage
+
+<a id="31-profiling"></a>
+### Profiling
+
 
 Source: [`src/eda/profiling.py`](../../src/eda/profiling.py). Functions return new summaries or calculation views without modifying inputs. In the tables below, `df` is a DataFrame, `series` a Series and `columns` an ordered column-name sequence.
 
-### 4.1. Structure and numeric interfaces
+<a id="311-structure-and-numeric-interfaces"></a>
+#### Structure and numeric interfaces
 
 | Signature | Purpose and inputs | Returns / notes |
 |---|---|---|
@@ -107,7 +110,8 @@ Source: [`src/eda/profiling.py`](../../src/eda/profiling.py). Functions return n
 
 For empty/all-missing data, undefined statistics and rates remain NaN. Missing rates use all rows; IQR tail rates use finite values. Caller-selected grain is not inferred from a measurement name.
 
-### 4.2. Frequencies, timestamps and missingness
+<a id="312-frequencies-timestamps-and-missingness"></a>
+#### Frequencies, timestamps and missingness
 
 | Signature | Purpose and inputs | Returns / notes |
 |---|---|---|
@@ -120,7 +124,8 @@ For empty/all-missing data, undefined statistics and rates remain NaN. Missing r
 
 The four pair states sum to the supplied row count. `conditional_pct[row, column]` is `P(column missing | row missing) × 100`; its diagonal is undefined if that field is never missing.
 
-### 4.3. Internal helpers
+<a id="313-internal-helpers"></a>
+#### Internal helpers
 
 | Signature | Purpose and returns |
 |---|---|
@@ -129,7 +134,9 @@ The four pair states sum to the supplied row count. `conditional_pct[row, column
 
 These underscore-prefixed helpers support the public functions and are not application entry points.
 
-## 5. Domain checks
+<a id="32-domain-checks"></a>
+### Domain checks
+
 
 Source: [`src/eda/checks.py`](../../src/eda/checks.py). No function loads, saves or cleans data.
 
@@ -145,13 +152,17 @@ Source: [`src/eda/checks.py`](../../src/eda/checks.py). No function loads, saves
 
 Text regex checks use original strings and never coerce numeric ZIP values. Candidate strip/casefold keys identify possible spelling variants only. State equality is a comparison of observed strings, not a distance or route feature. Deadline ranges describe multiplicity without choosing an order-level deadline.
 
-## 6. Notebook-facing workflow
+<a id="6-notebook-facing-workflow"></a>
+<a id="33-notebook-facing-workflow"></a>
+### Notebook-facing workflow
+
 
 Source: [`src/eda/workflow.py`](../../src/eda/workflow.py). Every function accepts in-memory frames or earlier results, displays its evidence, and returns the objects below. Displayed figures are closed afterward; there is no file I/O. Full profiles remain available even where examples or top groups are bounded.
 
 Argument names in signatures identify the same notebook objects. Do not mix profiles from different datasets.
 
-### 6.1. Distributions and missingness
+<a id="331-distributions-and-missingness"></a>
+#### Distributions and missingness
 
 | Signature | Purpose / required inputs | Return structure |
 |---|---|---|
@@ -165,7 +176,8 @@ Argument names in signatures identify the same notebook objects. Do not mix prof
 
 `condition_profiles` keys are `(target, grain, grouping_tuple)`. `order_context` is a validated order view with customer state and a temporary purchase-month label. The four core timestamps exclude Estimated Delivery.
 
-### 6.2. Initial domain inspections
+<a id="332-initial-domain-inspections"></a>
+#### Initial domain inspections
 
 | Signature | Purpose / required inputs | Return structure |
 |---|---|---|
@@ -174,7 +186,8 @@ Argument names in signatures identify the same notebook objects. Do not mix prof
 | `inspect_measurement_plausibility(numeric_profiles, df)` | Measurement counts and item deadlines before purchase | Dict: `measurement_review`, `deadline_before_purchase`, `deadline_by_status` |
 | `inspect_order_structure(df)` | Item/product/seller/deadline counts and composition frequencies | Dict: `order_composition`, `composition_frequency_tables` |
 
-### 6.3. Detailed investigations
+<a id="333-detailed-investigations"></a>
+#### Detailed investigations
 
 | Signature | Purpose / required inputs | Return structure |
 |---|---|---|
@@ -198,7 +211,9 @@ Detailed-investigation prerequisites:
 
 Same-day reversals retain full timestamp precision. Flagged-cohort month frequencies are counts, not monthly failure rates. The future-year deadline comparison is descriptive in EDA, not an SLA threshold. Temporary delivered cohorts, comparison keys and diagnostic flags do not change the supplied input or become persisted features.
 
-## 7. Plot primitives
+<a id="34-plot-primitives"></a>
+### Plot primitives
+
 
 Source: [`src/eda/plots.py`](../../src/eda/plots.py). Public functions return `(Figure, Axes)` and never call display/save or change global styles. Caller owns figure lifetime. Optional `ax` reuses an existing Matplotlib Axes.
 
@@ -210,17 +225,24 @@ Source: [`src/eda/plots.py`](../../src/eda/plots.py). Public functions return `(
 | `plot_missingness_heatmap(matrix, *, title="Conditional missingness", ax=None)` | Unique-labeled numeric percentage matrix | Values must be 0–100 or NaN; undefined cells grey; empty matrices show no-data text; tiny rates retain boundary notation |
 | `_get_axes(ax, figsize)` | Internal caller-Axes selection | Returns `(Figure, Axes)`; creates axes only when absent |
 
-## 8. Artifacts and testing
+## 4. Rules and calculations
+
+The data contracts in section 2 define denominators and null conventions. Quantiles and IQR bounds use finite values. The directional missingness matrix divides each paired-missing count by the count missing in its row field. Timeline comparisons require both endpoints, leaving missing comparisons unknown. Plot windows and frequency limits affect only displayed values.
+
+## 5. Outputs and storage
+
 
 | Artifact | Producer / role |
 |---|---|
 | `data/interim/merged_order_items.parquet` or `.csv` | Merge output read by EDA |
 | Notebook tables and figures | EDA execution; retained in the kernel/output until cleared |
-| `reports/EDA/EDA_Report.md` | Separately maintained narrative and selected observations |
-| `reports/figures/EDA/` | Images referenced by the report, exported separately |
+| `reports/EDA_Report.md` | Separately maintained narrative and selected observations |
+| `outputs/figures/EDA/` | Images referenced by the report, exported separately |
 | `docs/EDA/User_Guide.md`, `Technical_Reference.md` | Maintained usage and implementation documentation |
 
 The EDA notebook does not export the report or report images. Re-running it does not refresh these maintained artifacts.
+
+## 6. Validation, tests and extension
 
 | Test module | Coverage |
 |---|---|
@@ -237,7 +259,6 @@ python -m pytest tests/eda -q
 
 Shared fixtures `synthetic_order_items`, `synthetic_orders`, `synthetic_customers`, `synthetic_products`, `synthetic_sellers` construct the merge-like input. `eda_full_frame` supplies its canonical full table; `eda_plot_cleanup` closes figures and restores plot state. Domain-check tests also define `timeline_orders` locally. Tests use synthetic edge cases rather than fixed production-row counts.
 
-## 9. Maintenance and failure handling
 
 Validate input columns before profiling and use source-grain views before entity statistics. Do not bypass attribute-conflict errors by dropping duplicates arbitrarily. Preserve null versus blank distinctions, named denominators, nullable comparisons, literal text and unknown percentages when extending a helper.
 
