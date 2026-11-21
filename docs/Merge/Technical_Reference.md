@@ -1,72 +1,24 @@
 # Merge Technical Reference
 
-This reference documents the merge architecture, data contracts, execution flow, and function interfaces for code review, maintenance, and extension. For dataset selection and executable examples, see the [Merge User Guide](User_Guide.md).
+This reference describes merge interfaces, contracts and storage behavior. See the [notebook](../../notebooks/00_data_merging.ipynb), [User Guide](User_Guide.md) and [Merge Report](../../reports/Merge/Merge_Report.md).
 
-Scope: `src/pipeline`, supporting modules, the merge notebook, tests, and related configuration. Paths are relative to the repository root. Documentation is maintained separately; neither the pipeline nor the notebook generates or updates these files.
+## Contents
 
-<a id="start"></a>
-## 1. Navigation and conventions
+1. [Architecture and execution flow](#1-architecture-and-execution-flow)
+2. [Data contracts](#2-data-contracts)
+3. [Interfaces by workflow stage](#3-interfaces-by-workflow-stage)
+4. [Rules and calculations](#4-rules-and-calculations)
+5. [Outputs and storage](#5-outputs-and-storage)
+6. [Validation, tests and extension](#6-validation-tests-and-extension)
+7. [Test catalogue](#test-reference)
+8. [Standard output names](#output-names)
 
-### 1.1. Reading paths
-
-1. Sections **2–4** describe the file layout, data contracts, and execution flow.
-2. Section **5** covers entry points; sections **6–8** provide function-level reference.
-3. Sections **9–11** cover artifacts, testing, troubleshooting, and extension.
-4. [Appendix A](#test-reference) lists individual fixtures, helpers, and tests independently of the main execution flow.
-
-| Task | Reference |
-|---|---|
-| Merge a standard combination or explicit plan | [`merge_data()`](#fn-merge-data) |
-| Merge and save the full dataset | [`run_pipeline()`](#fn-run-pipeline) |
-| Read raw/interim data by name | [`load_data()`](#fn-load-data) |
-| Save or read a schema-aware result | [`save_dataset()`](#fn-save-dataset), [`read_dataset()`](#fn-read-dataset) |
-| Review data, plan, and result structures | [Dataclasses](#data-contracts) |
-| Inspect a single join | [`execute_join()`](#fn-execute-join) |
-| Review the test suite | [Section 10](#testing) |
-| Locate a failure | [Troubleshooting](#troubleshooting) |
-
-### 1.2. Reference conventions
-
-- **Execution flow before implementation detail:** entry points precede codecs, compatibility adapters, and the test catalogue.
-- **Consistent production function entries:** signature, **Purpose**, **Inputs**, **Returns**, **Behavior**, and **Notes/errors**.
-- **One primary explanation per concept:** other sections link to it; executable usage examples remain in the user guide.
-- **Declarations and observations are distinct:** schemas and registries define expectations, validators check data, reports record in-memory merge observations, and files are created only when a saver runs.
-
-**Contents**
-
-- [2. Code architecture](#architecture)
-- [3. Data contracts](#data-contracts)
-- [4. Execution flow](#flows)
-- [5. Entry points and notebook](#entrypoints)
-- [6. Contract and merge reference](#core-reference)
-- [7. Storage reference](#io-reference)
-- [8. Compatibility interfaces](#compatibility)
-- [9. Artifacts and data lifecycle](#artifacts)
-- [10. Testing](#testing)
-- [11. Limits, troubleshooting, and extension](#maintenance)
-- [Appendix A. Fixtures, helpers, and tests](#test-reference)
-- [Appendix B. Standard output names](#output-names)
-
-### 1.3. Terminology
-
-| Term | Project meaning |
-|---|---|
-| Module / package | A .py file / a Python directory with __init__.py in the current layout |
-| Schema / contract | Column names/order, dtypes, unique key, and required columns |
-| PK / FK | A table's unique key / a key referencing another table |
-| Grain | Whether a row represents an item or an order |
-| Preset / explicit | Automatically planned relationships / caller-defined joins |
-| Bridge | An additional source required to connect selected tables |
-| Cardinality | Key relationship: 1:1, 1:m, m:1, m:m |
-| Caller | Code invoking a function |
-| Adapter / wrapper | A retained interface delegating to shared implementation |
-| Round-trip | Save and reload with value, dtype, and missing-mask comparison |
-| Atomic replace | Complete a temporary file before replacing the destination |
+## 1. Architecture and execution flow
 
 <a id="architecture"></a>
-## 2. Code architecture
+### Code architecture
 
-### 2.1. Merge-related file layout
+#### Merge-related file layout
 
 ```text
 src/
@@ -103,41 +55,41 @@ notebooks/
 └── 00_data_merging.ipynb
 tests/
 ├── conftest.py
-├── test_merge_contracts.py
-├── test_merge_joins.py
-├── test_merge_presets.py
-├── test_merge_storage.py
-├── test_merge_reporting.py
-└── test_merge_pipeline.py
+├── merge/test_merge_contracts.py
+├── merge/test_merge_joins.py
+├── merge/test_merge_presets.py
+├── merge/test_merge_storage.py
+├── merge/test_merge_reporting.py
+└── merge/test_merge_pipeline.py
 pytest.ini
 requirements.txt
 .gitignore
 ```
 
-The implementation contains **25 production Python files**: 21 in pipeline and four directly under src; **33 explicitly written functions/methods** and **six classes**. Dataclass-generated constructors are described through fields rather than counted as handwritten functions. The notebook defines one additional root-location helper. Tests are covered in section 10 and Appendix A.
+The implementation contains **25 production Python files**: 21 in pipeline and four directly under src; **33 explicitly written functions/methods** and **six classes**. Dataclass-generated constructors are described through fields rather than counted as handwritten functions. The notebook defines one additional root-location helper. Tests are covered in the testing section and test catalogue.
 
-### 2.2. Responsibilities and dependencies
+#### Responsibilities and dependencies
 
 | Component | Responsibility | Reference |
 |---|---|---|
-| `contracts/` | Declare, normalize, and validate data; derive join schemas | [Section 3](#data-contracts), [6.1–6.3](#core-reference) |
-| `merging/` | Plan relationships, execute joins, register combinations, format reports | [6.4–6.7](#planner) |
-| `io/` | Typed raw loading, result storage, codecs, and atomic writes | [Section 7](#io-reference) |
+| `contracts/` | Declare, normalize, and validate data; derive join schemas | [Data contracts](#data-contracts), [Contract interfaces](#core-reference) |
+| `merging/` | Plan relationships, execute joins, register combinations, format reports | [Planner and merger](#planner) |
+| `io/` | Typed raw loading, result storage, codecs, and atomic writes | [Storage interfaces](#io-reference) |
 | `api.py` | Coordinate planner, loader, and executor | [`merge_data()`](#fn-merge-data) |
-| `run_merge.py` | Full CLI workflow and retained wrappers | [`run_pipeline()`](#fn-run-pipeline), [section 8](#compatibility) |
-| `data_loader.py` | Source names and raw/interim reader dispatch | [`load_data()`](#fn-load-data) |
-| `paths.py`, `config.py` | Shared paths and repository seed setting | [2.3](#configuration) |
-| Notebook | Invoke shared functions, display results, compare baseline | [5.4](#notebook) |
-| Tests | Verify behavior with fixtures, references, and assertions | [Section 10](#testing) |
+| `run_merge.py` | Full CLI workflow and retained wrappers | [`run_pipeline()`](#fn-run-pipeline), [compatibility interfaces](#compatibility) |
+| `data_loader.py` | Source names and raw/interim/processed reader dispatch | [`load_data()`](#fn-load-data) |
+| `paths.py`, `config.py` | Shared paths and repository seed setting | [Configuration](#configuration) |
+| Notebook | Invoke shared functions, display results, compare baseline | [Notebook](#notebook) |
+| Tests | Verify behavior with fixtures, references, and assertions | [Testing](#testing) |
 
 The API calls lower-level components. Normalization and validation helpers do not invoke the full pipeline or write documentation. The shared join algorithm lives in merger.py and is reused by the compatibility adapter.
 
 The five `__init__.py` files in src, pipeline, and its three subpackages are empty. Import from the full module, such as `from src.pipeline.api import merge_data`; the package root does not re-export every interface. This also limits circular imports between loading and merging. The tests and notebooks directories do not require additional `__init__.py` files for the current workflow.
 
 <a id="configuration"></a>
-### 2.3. Configuration and import side effects
+#### Configuration and import side effects
 
-`../../src/paths.py` derives the root from its own location rather than a machine-specific drive:
+`src/paths.py` derives the root from its own location rather than a machine-specific drive:
 
 | Constant | Relative path / role |
 |---|---|
@@ -151,126 +103,12 @@ The five `__init__.py` files in src, pipeline, and its three subpackages are emp
 
 Importing paths.py creates interim, processed, figures, and tables directories if needed, including parents. It does not create raw CSV files or document contents. Imports can therefore create directories before a merge runs.
 
-`../../src/config.py` defines RANDOM_SEED=42; the merge implementation does not use it. Importing run_merge.py can configure console logging; see [5.3](#fn-run-pipeline).
-
-<a id="data-contracts"></a>
-## 3. Data contracts
-
-<a id="schema"></a>
-### 3.1. Dataclasses in `../../src/pipeline/contracts/schema.py`
-
-Dataclasses provide explicit configuration and result fields. **Constructing an instance does not validate external data.** All four use frozen=True, but nested lists, dictionaries, and DataFrames remain mutable. Create separate configurations instead of modifying canonical constants for one operation.
-
-#### `TableSchema`
-
-Describes a DataFrame independently of its storage format.
-
-| Input field | Meaning / default |
-|---|---|
-| `columns: List[str]` | Required ordered column names |
-| `dtypes: Dict[str, str]` | Required pandas dtype for each column |
-| `unique_key: List[str]` | One complete key; [] means no declared uniqueness constraint |
-| `non_nullable_columns: List[str]` | Required non-missing columns; default [] |
-
-The constructor returns a schema for validators, executors, and I/O. Uniqueness of `(order_id, order_item_id)` applies to the **pair**, not to order_id independently.
-
-#### `JoinSpec`
-
-Describes one join to a right-side table.
-
-| Input field | Meaning / default |
-|---|---|
-| `table: str` | Required right-table name |
-| `on` | Same-name key or key list; default None |
-| `left_on`, `right_on` | Corresponding differently named keys of equal length; default None |
-| `how` | Default left; also inner, right, outer |
-| `validate` | Default m:1; also 1:1, 1:m, m:m |
-| `columns` | Right columns to select; None selects all; right join keys are retained |
-| `rename: Dict[str, str]` | Renames of selected non-key right columns; default {} |
-| `require_match: bool` | Require every left key to exist on the right; default True |
-
-Use on or both left_on/right_on, not both forms. Construction declares the operation without proving its actual cardinality.
-
-#### `MergeResult`
-
-| Input/output field | Content |
-|---|---|
-| `data: DataFrame` | Result table, retained by reference |
-| `schema: TableSchema` | Output contract |
-| `report: Dict[str, Any]` | In-memory plan, counts, and checks; default {} |
-
-Construction neither copies nor validates data. With eq=False, result equality uses identity; compare DataFrames with pd.testing.assert_frame_equal(). Mutating data does not refresh the report.
-
-#### `TableLoadSpec`
-
-| Input field | Content |
-|---|---|
-| `dataset_name: str` | Registered raw dataset name |
-| `usecols: List[str]` | Selected columns in declared order |
-| `dtypes: Dict[str, str]` | Non-timestamp dtypes; default {} |
-| `date_columns: List[str]` | Timestamp columns declared as datetime64[us]; default [] |
-
-Each column must have exactly one dtype or date declaration. A spec does not register a raw filename in DATASETS. Default containers use default_factory and are separate per instance.
-
-<a id="source-schema"></a>
-### 3.2. Source and full schemas
-
-| Declaration | Role |
-|---|---|
-| ORDER_ITEMS_SPEC, ORDERS_SPEC, CUSTOMERS_SPEC, PRODUCTS_SPEC, SELLERS_SPEC | Selected columns and dtypes for five sources |
-| SOURCE_PRIMARY_KEYS | Shared source keys for loading, planning, and validation |
-| EXPECTED_FINAL_COLUMNS | The ordered 25-column full schema |
-| MANDATORY_NON_NULL_COLUMNS | Five required full-result IDs |
-| ALL_TIMESTAMP_COLUMNS, ZIP_COLUMNS | Six timestamps and two ZIP columns |
-| BENCHMARK_ROW_COUNT | Reference count 112650; not a target to force inputs to match |
-| FULL_MERGE_SCHEMA | Full contract with key (order_id, order_item_id) |
-
-<a id="fn-build-source-schema"></a>
-#### `build_source_schema()`
-
-`build_source_schema(spec, *, key_columns=None) -> TableSchema`
-
-- **Purpose:** convert a load spec into a source contract with a key.
-- **Inputs:** TableLoadSpec and optional key override; otherwise use SOURCE_PRIMARY_KEYS.
-- **Returns:** independent schema in usecols order, timestamps in microseconds, PK components declared non-null.
-- **Behavior:** validate names, columns, dtype/date coverage, and keys, then construct new containers without reading data.
-- **Notes/errors:** duplicate, missing, extra, or overlapping declarations and invalid keys raise TypeError/ValueError. Unregistered custom keys require key_columns.
-
-### 3.3. Sources and grain
-
-DATASETS in src/data_loader.py contains nine names. Only the first five participate in standard merge planning:
-
-| Source | File under data/raw/ | Reference rows / selected columns / PK |
-|---|---|---|
-| order_items | olist_order_items_dataset.csv | 112650 / 7 / (order_id, order_item_id) |
-| orders | olist_orders_dataset.csv | 99441 / 8 / order_id |
-| customers | olist_customers_dataset.csv | 99441 / 4 / customer_id |
-| products | olist_products_dataset.csv | 32951 / 6 / product_id |
-| sellers | olist_sellers_dataset.csv | 3095 / 4 / seller_id |
-| geolocation | olist_geolocation_dataset.csv | Outside presets |
-| payments | olist_order_payments_dataset.csv | Outside presets |
-| reviews | olist_order_reviews_dataset.csv | Outside presets |
-| category_translation | product_category_name_translation.csv | Outside presets |
-
-**Full:** 112,650 rows, 25 columns, 98,666 distinct orders; one item per row. **Orders + customers:** 99,441 rows, 11 columns; one order per row. These are reference-data observations, not universal input constraints.
-
-Canonical dtypes: IDs/ZIP/text use string; order_item_id uses int64; price/freight/physical attributes use float64; six timestamps use datetime64[us]. See the [25-column schema](User_Guide.md#schema) for individual fields.
-
-<a id="downstream-notes"></a>
-### 3.4. Downstream data considerations
-
-- The full result is item-based: its 98,666 orders do not represent all 99,441 orders rows. Order/customer attributes repeat across items; count orders using distinct order_id.
-- Shipping limit, price, and freight originate at item level. Merge does not select a representative seller or deadline for a multi-item/multi-seller order.
-- Product weight uses grams and dimensions use centimeters; a product attribute is not an aggregated order weight.
-- ZIP codes are text; canonical timestamps have no timezone. Merge does not infer timezone or business days.
-- Required IDs do not imply complete timestamps/attributes. Allowed missing values are retained.
-- customer_unique_id is excluded; customer_id is not a substitute for cross-order customer identity.
-- Delivered-only filtering, invalid/missing time removal, late/delay/route/bulky features, and additional source integrations belong to separately defined downstream stages.
+`src/config.py` defines RANDOM_SEED=42; the merge implementation does not use it. Importing run_merge.py can configure console logging; see [Pipeline entry point](#fn-run-pipeline).
 
 <a id="flows"></a>
-## 4. Execution flow
+### Execution flow
 
-### 4.1. Merge request to result
+#### Merge request to result
 
 ```mermaid
 flowchart TD
@@ -293,7 +131,7 @@ A single join follows **schema derivation → input validation → FK checks →
 
 Plan preflight precedes the **first join**, not necessarily all raw reads. Merge does not use interim data as an input cache or save automatically.
 
-### 4.2. Save and read
+#### Save and read
 
 ```mermaid
 flowchart LR
@@ -318,16 +156,134 @@ flowchart TD
     E -->|Failure| H["Re-raise original CSV error with path note"]
 ```
 
-Invalid declarations stop before format attempts. A per-file failure against a valid declaration can trigger fallback. When both files exist, default reading still prefers Parquet rather than modification time. See [7.1](#dataset-io) for pre-I/O versus format-specific errors.
+Invalid declarations stop before format attempts. A per-file failure against a valid declaration can trigger fallback. When both files exist, default reading still prefers Parquet rather than modification time. See [Dataset I/O](#dataset-io) for pre-I/O versus format-specific errors.
+
+## 2. Data contracts
+
+<a id="data-contracts"></a>
+### Data contracts
+
+<a id="schema"></a>
+#### Dataclasses in `src/pipeline/contracts/schema.py`
+
+Dataclasses provide explicit configuration and result fields. **Constructing an instance does not validate external data.** All four use frozen=True, but nested lists, dictionaries, and DataFrames remain mutable. Create separate configurations instead of modifying canonical constants for one operation.
+
+##### `TableSchema`
+
+Describes a DataFrame independently of its storage format.
+
+| Input field | Meaning / default |
+|---|---|
+| `columns: List[str]` | Required ordered column names |
+| `dtypes: Dict[str, str]` | Required pandas dtype for each column |
+| `unique_key: List[str]` | One complete key; [] means no declared uniqueness constraint |
+| `non_nullable_columns: List[str]` | Required non-missing columns; default [] |
+
+The constructor returns a schema for validators, executors, and I/O. Uniqueness of `(order_id, order_item_id)` applies to the **pair**, not to order_id independently.
+
+##### `JoinSpec`
+
+Describes one join to a right-side table.
+
+| Input field | Meaning / default |
+|---|---|
+| `table: str` | Required right-table name |
+| `on` | Same-name key or key list; default None |
+| `left_on`, `right_on` | Corresponding differently named keys of equal length; default None |
+| `how` | Default left; also inner, right, outer |
+| `validate` | Default m:1; also 1:1, 1:m, m:m |
+| `columns` | Right columns to select; None selects all; right join keys are retained |
+| `rename: Dict[str, str]` | Renames of selected non-key right columns; default {} |
+| `require_match: bool` | Require every left key to exist on the right; default True |
+
+Use on or both left_on/right_on, not both forms. Construction declares the operation without proving its actual cardinality.
+
+##### `MergeResult`
+
+| Input/output field | Content |
+|---|---|
+| `data: DataFrame` | Result table, retained by reference |
+| `schema: TableSchema` | Output contract |
+| `report: Dict[str, Any]` | In-memory plan, counts, and checks; default {} |
+
+Construction neither copies nor validates data. With eq=False, result equality uses identity; compare DataFrames with pd.testing.assert_frame_equal(). Mutating data does not refresh the report.
+
+##### `TableLoadSpec`
+
+| Input field | Content |
+|---|---|
+| `dataset_name: str` | Registered raw dataset name |
+| `usecols: List[str]` | Selected columns in declared order |
+| `dtypes: Dict[str, str]` | Non-timestamp dtypes; default {} |
+| `date_columns: List[str]` | Timestamp columns declared as datetime64[us]; default [] |
+
+Each column must have exactly one dtype or date declaration. A spec does not register a raw filename in DATASETS. Default containers use default_factory and are separate per instance.
+
+<a id="source-schema"></a>
+#### Source and full schemas
+
+| Declaration | Role |
+|---|---|
+| ORDER_ITEMS_SPEC, ORDERS_SPEC, CUSTOMERS_SPEC, PRODUCTS_SPEC, SELLERS_SPEC | Selected columns and dtypes for five sources |
+| SOURCE_PRIMARY_KEYS | Shared source keys for loading, planning, and validation |
+| EXPECTED_FINAL_COLUMNS | The ordered 25-column full schema |
+| MANDATORY_NON_NULL_COLUMNS | Five required full-result IDs |
+| ALL_TIMESTAMP_COLUMNS, ZIP_COLUMNS | Six timestamps and two ZIP columns |
+| BENCHMARK_ROW_COUNT | Reference count 112650; not a target to force inputs to match |
+| FULL_MERGE_SCHEMA | Full contract with key (order_id, order_item_id) |
+
+<a id="fn-build-source-schema"></a>
+##### `build_source_schema()`
+
+`build_source_schema(spec, *, key_columns=None) -> TableSchema`
+
+- **Purpose:** convert a load spec into a source contract with a key.
+- **Inputs:** TableLoadSpec and optional key override; otherwise use SOURCE_PRIMARY_KEYS.
+- **Returns:** independent schema in usecols order, timestamps in microseconds, PK components declared non-null.
+- **Behavior:** validate names, columns, dtype/date coverage, and keys, then construct new containers without reading data.
+- **Notes/errors:** duplicate, missing, extra, or overlapping declarations and invalid keys raise TypeError/ValueError. Unregistered custom keys require key_columns.
+
+#### Sources and grain
+
+DATASETS in src/data_loader.py contains nine names. Only the first five participate in standard merge planning:
+
+| Source | File under data/raw/ | Reference rows / selected columns / PK |
+|---|---|---|
+| order_items | olist_order_items_dataset.csv | 112650 / 7 / (order_id, order_item_id) |
+| orders | olist_orders_dataset.csv | 99441 / 8 / order_id |
+| customers | olist_customers_dataset.csv | 99441 / 4 / customer_id |
+| products | olist_products_dataset.csv | 32951 / 6 / product_id |
+| sellers | olist_sellers_dataset.csv | 3095 / 4 / seller_id |
+| geolocation | olist_geolocation_dataset.csv | Outside presets |
+| payments | olist_order_payments_dataset.csv | Outside presets |
+| reviews | olist_order_reviews_dataset.csv | Outside presets |
+| category_translation | product_category_name_translation.csv | Outside presets |
+
+**Full:** 112,650 rows, 25 columns, 98,666 distinct orders; one item per row. **Orders + customers:** 99,441 rows, 11 columns; one order per row. These are reference-data observations, not universal input constraints.
+
+Canonical dtypes: IDs/ZIP/text use string; order_item_id uses int64; price/freight/physical attributes use float64; six timestamps use datetime64[us]. See the [25-column schema](User_Guide.md#schema) for individual fields.
+
+<a id="downstream-notes"></a>
+#### Downstream data considerations
+
+- The full result is item-based: its 98,666 orders do not represent all 99,441 orders rows. Order/customer attributes repeat across items; count orders using distinct order_id.
+- Shipping limit, price, and freight originate at item level. Merge does not select a representative seller or deadline for a multi-item/multi-seller order.
+- Product weight uses grams and dimensions use centimeters; a product attribute is not an aggregated order weight.
+- ZIP codes are text; canonical timestamps have no timezone. Merge does not infer timezone or business days.
+- Required IDs do not imply complete timestamps/attributes. Allowed missing values are retained.
+- customer_unique_id is excluded; customer_id is not a substitute for cross-order customer identity.
+- Delivered-only filtering, invalid/missing time removal, late/delay/route/bulky features, and additional source integrations belong to separately defined downstream stages.
+
+## 3. Interfaces by workflow stage
 
 <a id="entrypoints"></a>
-## 5. Entry points and notebook
+### Entry points and notebook
 
 <a id="api"></a>
-### 5.1. `../../src/pipeline/api.py`
+#### `src/pipeline/api.py`
 
 <a id="fn-merge-data"></a>
-#### `merge_data()`
+##### `merge_data()`
 
 ```text
 merge_data(*, tables=None, base=None, joins=None,
@@ -348,25 +304,25 @@ merge_data(*, tables=None, base=None, joins=None,
 Explicit mode preserves order, adds no bridges, and reports grain=None. Unused mapping entries are ignored. A repeated raw source is loaded once. Names are case-sensitive; supply a sequence such as list/tuple rather than a string or set.
 
 <a id="data-loader"></a>
-### 5.2. `../../src/data_loader.py`
+#### `src/data_loader.py`
 
 DATASETS maps nine raw names to filenames. INTERIM_DATASETS is constructed at import and holds 26 plans/schemas. Neither registry certifies file existence or stores data/run history.
 
 <a id="fn-load-data"></a>
-#### `load_data()`
+##### `load_data()`
 
 `load_data(name: str, stage: str="raw", **kwargs) -> DataFrame`
 
-- **Purpose:** read registered raw/interim datasets, or custom interim data with a schema.
-- **Inputs:** name and stage; raw forwards kwargs to pandas, while interim accepts only file_format/schema.
-- **Returns:** DataFrame; interim reading restores dtypes and checks the contract.
-- **Behavior:** raw resolves the file and dispatches by suffix; interim chooses a registered/custom schema and calls read_dataset() under INTERIM_DIR.
-- **Notes/errors:** stage defaults to raw; merged names require stage="interim". Registered contracts cannot be weakened; custom names require schema. Interim rejects dtype/usecols and other parser kwargs; select columns after reading. Invalid names/stages raise ValueError; invalid options/schema types raise TypeError; reader errors propagate.
+- **Purpose:** read registered raw, interim or processed datasets, or custom saved data with a schema.
+- **Inputs:** name and stage; raw forwards kwargs to pandas, while interim and processed accept only file_format/schema.
+- **Returns:** DataFrame; saved-stage reading restores dtypes and checks the contract.
+- **Behavior:** raw resolves the file and dispatches by suffix; saved stages choose a registered/custom schema and call read_dataset() under INTERIM_DIR or PROCESSED_DIR.
+- **Notes/errors:** stage defaults to raw; merged names require stage="interim". Registered contracts cannot be weakened; custom names require schema. Saved stages reject dtype/usecols and other parser kwargs; select columns after reading. Invalid names/stages raise ValueError; invalid options/schema types raise TypeError; reader errors propagate.
 
 Raw loading alone does not enforce typed merge contracts; use [load_table()](#fn-load-table). The raw branch gives file_format/schema no special meaning and forwards them to pandas unchanged.
 
 <a id="fn-load-all"></a>
-#### `load_all()`
+##### `load_all()`
 
 `load_all() -> Dict[str, DataFrame]` describes the actual return value; the source has no return annotation.
 
@@ -377,10 +333,10 @@ Raw loading alone does not enforce typed merge contracts; use [load_table()](#fn
 - **Notes/errors:** requires all files and enough memory; a source failure aborts the call. This is not the typed merge loader or an efficient route for a small preset.
 
 <a id="run-merge"></a>
-### 5.3. `../../src/pipeline/run_merge.py`: full workflow
+#### `src/pipeline/run_merge.py`: full workflow
 
 <a id="fn-run-pipeline"></a>
-#### `run_pipeline()`
+##### `run_pipeline()`
 
 `run_pipeline() -> DataFrame`
 
@@ -398,10 +354,10 @@ python -m src.pipeline.run_merge
 
 This command writes interim output. Importing the module does not run the pipeline; execution requires a function call or the `__main__` entry point.
 
-The module calls logging.basicConfig() at INFO level with timestamp/level/logger formatting and StreamHandler(sys.stdout); the logger is olist_pipeline. It does not configure a FileHandler. A host application that previously configured the root logger may control effective logging. Retained wrappers are described in [section 8](#compatibility).
+The module calls logging.basicConfig() at INFO level with timestamp/level/logger formatting and StreamHandler(sys.stdout); the logger is olist_pipeline. It does not configure a FileHandler. A host application that previously configured the root logger may control effective logging. Retained wrappers are described in [compatibility interfaces](#compatibility).
 
 <a id="notebook"></a>
-### 5.4. `../../notebooks/00_data_merging.ipynb`
+#### `notebooks/00_data_merging.ipynb`
 
 Execute the four code cells in order:
 
@@ -413,7 +369,7 @@ Execute the four code cells in order:
 | 3 | Full contract and baseline checks | Expected / Actual / Passed; error on failure |
 
 <a id="fn-find-project-root"></a>
-#### `find_project_root()`
+##### `find_project_root()`
 
 `find_project_root(start_path: Path) -> Path`
 
@@ -432,15 +388,15 @@ Execute the four code cells in order:
 - The ipynb stores code, metadata, and execution outputs when saved. No cell writes or updates Markdown/README files.
 
 <a id="core-reference"></a>
-## 6. Contract and merge reference
+### Contract and merge reference
 
 These functions do not load or save datasets. The registry constructs in-memory declarations; reporting constructs tables for the caller to display.
 
 <a id="normalizer"></a>
-### 6.1. `../../src/pipeline/contracts/normalizer.py`
+#### `src/pipeline/contracts/normalizer.py`
 
 <a id="fn-normalize-table-types"></a>
-#### `normalize_table_types()`
+##### `normalize_table_types()`
 
 `normalize_table_types(df, schema, *, table_name="dataset") -> DataFrame`
 
@@ -451,12 +407,12 @@ These functions do not load or save datasets. The registry constructs in-memory 
 - **Notes/errors:** does not validate PK/FK, fill missing data, trim IDs, or drop extras. Text must already be strings; booleans must be actual booleans, not "True". Numeric timestamps without explicit units are rejected. Unsafe conversions raise ValueError; a non-DataFrame raises TypeError. Lost ZIP zeros cannot be inferred.
 
 <a id="validator"></a>
-### 6.2. `../../src/pipeline/contracts/validator.py`
+#### `src/pipeline/contracts/validator.py`
 
 The four shared validators do not mutate data. Schema, source key, FK, and complete contract checks have distinct scopes.
 
 <a id="fn-validate-table-schema"></a>
-#### `validate_table_schema()`
+##### `validate_table_schema()`
 
 `validate_table_schema(df, schema, *, table_name="dataset") -> None`
 
@@ -467,7 +423,7 @@ The four shared validators do not mutate data. Schema, source key, FK, and compl
 - **Notes/errors:** does not check PK, non-null values, FK, or row counts. Invalid types/structure raise TypeError/ValueError; a correctly typed empty table is valid.
 
 <a id="fn-validate-source-keys"></a>
-#### `validate_source_keys()`
+##### `validate_source_keys()`
 
 `validate_source_keys(df, table_name, *, key_columns=None) -> None`
 
@@ -478,7 +434,7 @@ The four shared validators do not mutate data. Schema, source key, FK, and compl
 - **Notes/errors:** key declarations cannot be empty; an empty table with valid key columns is allowed. Custom sources need explicit keys. Invalid declarations/data raise TypeError/ValueError. Duplicate counts exclude the first occurrence.
 
 <a id="fn-validate-foreign-keys"></a>
-#### `validate_foreign_keys()`
+##### `validate_foreign_keys()`
 
 `validate_foreign_keys(left_df, right_df, join, *, left_table_name="left") -> Dict[str, int]`
 
@@ -489,7 +445,7 @@ The four shared validators do not mutate data. Schema, source key, FK, and compl
 - **Notes/errors:** matches count **left input rows**, not expanded output rows. Strict unmatched keys raise ValueError; permissive mode returns counts. This function does not join or check cardinality/dtypes. Invalid configuration raises TypeError/ValueError.
 
 <a id="fn-validate-table-contract"></a>
-#### `validate_table_contract()`
+##### `validate_table_contract()`
 
 `validate_table_contract(df, schema, *, table_name="dataset", expected_rows=None) -> None`
 
@@ -499,13 +455,13 @@ The four shared validators do not mutate data. Schema, source key, FK, and compl
 - **Behavior:** validate declarations, structure/dtypes, optional count, declared PK, and remaining required attributes.
 - **Notes/errors:** unique_key=[] does not infer a key from the table name. Attribute non-null rules inspect missing values; PK also rejects blank strings. Expected count must be a non-negative integer, excluding bool/float; None omits the check. Violations raise TypeError/ValueError; no benchmark or business rules are inferred.
 
-The retained MergeValidator class is covered in [8.3](#legacy-validator).
+The retained MergeValidator class is covered in [Compatibility validator](#legacy-validator).
 
 <a id="schema-derivation"></a>
-### 6.3. `../../src/pipeline/contracts/schema_derivation.py`
+#### `src/pipeline/contracts/schema_derivation.py`
 
 <a id="fn-derive-join-schema"></a>
-#### `derive_join_schema()`
+##### `derive_join_schema()`
 
 `derive_join_schema(left, right, join) -> TableSchema`
 
@@ -516,12 +472,12 @@ The retained MergeValidator class is covered in [8.3](#legacy-validator).
 - **Notes/errors:** paired key dtypes must match. Selection does not reorder the right schema; renames apply only to selected non-key right columns. Collisions are rejected rather than suffixed. A key survives only when its side is guaranteed present and unexpanded; otherwise it is []. Invalid declarations raise TypeError/ValueError. Runtime checks must still enforce the assumptions.
 
 <a id="planner"></a>
-### 6.4. `../../src/pipeline/merging/planner.py`
+#### `src/pipeline/merging/planner.py`
 
-MERGE_TABLE_SPECS defines item → orders → customers → products → sellers order. MERGE_RELATIONSHIPS defines the four graph edges from section 4. Path discovery treats edges bidirectionally; executable plans retain the configured FK → PK direction.
+MERGE_TABLE_SPECS defines item → orders → customers → products → sellers order. MERGE_RELATIONSHIPS defines the four graph edges in the execution flow. Path discovery treats edges bidirectionally; executable plans retain the configured FK → PK direction.
 
 <a id="fn-resolve-bridge-tables"></a>
-#### `resolve_bridge_tables()`
+##### `resolve_bridge_tables()`
 
 `resolve_bridge_tables(tables: Sequence[str]) -> List[str]`
 
@@ -532,7 +488,7 @@ MERGE_TABLE_SPECS defines item → orders → customers → products → sellers
 - **Notes/errors:** string/set inputs, unknown/duplicate names, invalid counts, or disconnected configuration raise TypeError/ValueError.
 
 <a id="fn-build-combination-plan"></a>
-#### `build_combination_plan()`
+##### `build_combination_plan()`
 
 `build_combination_plan(tables: Sequence[str]) -> Dict[str, Any]`
 
@@ -543,10 +499,10 @@ MERGE_TABLE_SPECS defines item → orders → customers → products → sellers
 - **Notes/errors:** planning does not validate actual rows. Invalid configuration raises TypeError/ValueError. Preset grain is order_item or order.
 
 <a id="merger"></a>
-### 6.5. `../../src/pipeline/merging/merger.py`
+#### `src/pipeline/merging/merger.py`
 
 <a id="fn-execute-join"></a>
-#### `execute_join()`
+##### `execute_join()`
 
 ```text
 execute_join(left_df, right_df, left_schema, right_schema, join,
@@ -556,7 +512,7 @@ execute_join(left_df, right_df, left_schema, right_schema, join,
 - **Purpose:** execute one validated join through the shared implementation.
 - **Inputs:** canonical DataFrames, source schemas, JoinSpec, and left label.
 - **Returns:** new data, derived schema, and a single-step report.
-- **Behavior:** follow section 4.1; copy/reset working indexes, protect numpy integer/bool columns with nullable types before merging, add an invalid-key guard, merge with sort=False/cardinality validation/no suffixes, remove the guard, and normalize output.
+- **Behavior:** follow the merge request flow; copy/reset working indexes, protect numpy integer/bool columns with nullable types before merging, add an invalid-key guard, merge with sort=False/cardinality validation/no suffixes, remove the guard, and normalize output.
 - **Notes/errors:** guard names avoid user collisions. Cardinality still considers original rows, including invalid keys. Invalid configuration/contracts/FK raise TypeError/ValueError; pandas.errors.MergeError includes join context for cardinality failures. No loading, saving, cleaning, or input mutation.
 
 | Row-preservation guarantee | expected_rows |
@@ -570,7 +526,7 @@ execute_join(left_df, right_df, left_schema, right_schema, join,
 Columns follow the derived schema. Column-based joins return a new index. Explicit right/outer joins are not universally guaranteed to retain left row order.
 
 <a id="fn-execute-join-plan"></a>
-#### `execute_join_plan()`
+##### `execute_join_plan()`
 
 `execute_join_plan(base, joins, tables, schemas) -> MergeResult`
 
@@ -581,12 +537,12 @@ Columns follow the derived schema. Column-based joins return a new index. Explic
 - **Notes/errors:** no automatic bridges, reorder, load, or save. Sources can repeat with valid selection/renaming. joins=[] returns independent data/schema copies with the original index and empty steps. Failures include step/table context and retain their type. Report left_table labels use the base; left_rows describes the accumulated intermediate result.
 
 <a id="registry"></a>
-### 6.6. `../../src/pipeline/merging/registry.py`
+#### `src/pipeline/merging/registry.py`
 
 FULL_DATASET_NAME="merged_order_items" is the full-result alias, not a one-table item result.
 
 <a id="fn-build-dataset-registry"></a>
-#### `build_dataset_registry()`
+##### `build_dataset_registry()`
 
 `build_dataset_registry() -> Dict[str, Dict[str, Any]]`
 
@@ -597,10 +553,10 @@ FULL_DATASET_NAME="merged_order_items" is the full-result alias, not a one-table
 - **Notes/errors:** configurations are independent between calls. No file reads or observed baselines. Non-full names use merged_ plus **requested** names in canonical order separated by `__`. Different requests may resolve to identical sources while retaining different dataset names.
 
 <a id="reporting"></a>
-### 6.7. `../../src/pipeline/merging/reporting.py`
+#### `src/pipeline/merging/reporting.py`
 
 <a id="fn-build-merge-report-tables"></a>
-#### `build_merge_report_tables()`
+##### `build_merge_report_tables()`
 
 `build_merge_report_tables(result: MergeResult) -> Dict[str, DataFrame]`
 
@@ -630,16 +586,91 @@ FULL_DATASET_NAME="merged_order_items" is the full-result alias, not a one-table
 - Duplicate counts use join keys and exclude the first occurrence. Repeated many-side FK values are valid. Schema key flags identify components of **one composite key**.
 - Shape and actual dtypes come from the current DataFrame; other counts/statuses were recorded at merge time. Changes to data can make them differ; revalidate the changed table.
 
+<a id="compatibility"></a>
+### Compatibility interfaces
+
+These interfaces retain active callers/tests. Prefer the entry points above; the legacy adapter's different policy must not be used to bypass strict validation.
+
+#### Wrappers in `src/pipeline/run_merge.py`
+
+<a id="fn-load-and-prepare"></a>
+##### `_load_and_prepare()`
+
+`_load_and_prepare(spec: TableLoadSpec) -> DataFrame`
+
+- **Purpose:** retain the former typed-loading entry point.
+- **Inputs:** source spec.
+- **Returns:** the DataFrame returned by load_table().
+- **Behavior:** log console messages before/after the shared loader.
+- **Notes/errors:** no separate parser/validator; errors propagate. The underscore indicates an internal helper. Tests still call it; run_pipeline() now loads through the API.
+
+<a id="fn-save-merged-dataset"></a>
+##### `save_merged_dataset()`
+
+`save_merged_dataset(merged_df: DataFrame, output_dir: Path) -> Path`
+
+- **Purpose:** retain the former **full-result** save interface.
+- **Inputs:** full-contract DataFrame and destination directory.
+- **Returns:** actual saved Parquet/CSV Path.
+- **Behavior:** delegate once to save_dataset() using FULL_MERGE_SCHEMA and FULL_DATASET_NAME.
+- **Notes/errors:** shared validation/atomic/fallback/error behavior is preserved. Partial/custom results require the generic saver and their own schema.
+
+#### `OlistDataMerger` in `src/pipeline/merging/merger.py`
+
+<a id="fn-olist-init"></a>
+##### `OlistDataMerger.__init__()`
+
+`__init__(self) -> None`
+
+- **Purpose:** construct the five-source compatibility adapter.
+- **Inputs:** no external configuration.
+- **Returns:** no data; the instance receives expected_columns.
+- **Behavior:** expected_columns references EXPECTED_FINAL_COLUMNS.
+- **Notes/errors:** no loading/joining. Do not modify the shared list to customize a contract; use a separate schema.
+
+<a id="fn-olist-merge-tables"></a>
+##### `OlistDataMerger.merge_tables()`
+
+`merge_tables(self, order_items, orders, customers, products, sellers) -> DataFrame`
+
+- **Purpose:** retain the five-DataFrame interface through the shared executor.
+- **Inputs:** all five source frames, with retained positional/keyword arguments.
+- **Returns:** a copied 25-column full DataFrame, not MergeResult.
+- **Behavior:** build the full preset, normalize/reorder sources, precheck right PK duplicates, then execute with require_match=False.
+- **Notes/errors:** unmatched items remain for legacy caller validation, unlike strict presets. Extra source columns are not silently discarded. Duplicate right PKs raise MergeError for compatibility; other contract failures may raise ValueError. No loading/saving.
+
+<a id="legacy-validator"></a>
+#### `MergeValidator` in `src/pipeline/contracts/validator.py`
+
+<a id="fn-validate-hard-rules"></a>
+##### `MergeValidator.validate_hard_rules()`
+
+`validate_hard_rules(merged_df, base_order_items, orders, products, sellers) -> None`
+
+- **Purpose:** retain legacy full-result hard checks.
+- **Inputs:** full output and four sources; a static method callable through class or instance.
+- **Returns:** None when checks pass, with logger output.
+- **Behavior:** check item row count, PK, exact columns/order, required IDs, timestamp/ZIP families, suffixes, and orders/products/sellers orphans through shared key helpers.
+- **Notes/errors:** no customer source argument, so it does not replace strict orders→customers validation. Its dtype checks are not equivalent to the precise full contract. Violations raise errors. run_pipeline() no longer calls this class; run_soft_checks() is absent.
+
+## 4. Rules and calculations
+
+Preset joins load required sources and bridges, then join in the configured relationship order with left many-to-one validation. The declared base determines the grain. Explicit plans execute caller-specified joins in order and do not infer grain. A matched foreign key can still have missing non-key attributes.
+
+`build_merge_report_tables` creates eight in-memory tables: overview, sources, joins, row counts, key checks, selected columns, validation and schema. Matched and unmatched values count left input rows. Recorded validation describes the original merge; current dimensions and dtypes reflect the frame at display time. Re-run validation after editing the result.
+
+## 5. Outputs and storage
+
 <a id="io-reference"></a>
-## 7. Storage reference
+### Storage reference
 
 Typical callers use save_dataset()/read_dataset() or the named loader. Individual format readers/writers do not implement fallback or atomic replacement; those responsibilities belong to orchestration and shared helpers.
 
 <a id="dataset-io"></a>
-### 7.1. `../../src/pipeline/io/dataset_io.py`
+#### `src/pipeline/io/dataset_io.py`
 
 <a id="fn-save-dataset"></a>
-#### `save_dataset()`
+##### `save_dataset()`
 
 `save_dataset(df, output_dir, schema, *, dataset_name) -> Path`
 
@@ -652,23 +683,23 @@ Typical callers use save_dataset()/read_dataset() or the named loader. Individua
 A successful write replaces the same name/extension; **the other format remains untouched**. A newer CSV can coexist with an older Parquet file, so select CSV explicitly when needed. A regex-valid name may still be rejected by the operating system.
 
 <a id="fn-read-dataset"></a>
-#### `read_dataset()`
+##### `read_dataset()`
 
 `read_dataset(output_dir, schema, *, dataset_name, file_format="parquet") -> DataFrame`
 
 - **Purpose:** read a declared contract using an explicit format preference.
 - **Inputs:** directory/name under the saver rules, original schema, and exactly "parquet" or "csv".
 - **Returns:** new contract-compliant DataFrame preserving file row order with a new index.
-- **Behavior:** validate arguments and schema using a typed empty frame, then follow section 4.2.
+- **Behavior:** validate arguments and schema using a typed empty frame, then follow the save and read flow.
 - **Notes/errors:** invalid/column-free declarations stop before reading, without fallback. Default Parquet failures, including actual file-contract violations, are reported before CSV. Both failures raise RuntimeError/ExceptionGroup. Direct CSV announces the choice and re-raises the original error with a path note. No directory creation, writes, schema inference, or freshness selection.
 
 Messages preserve error types, causes, and notes. Engine-installation guidance comes from Parquet code when the engine is missing; permissions or missing-file failures are not relabeled as missing dependencies.
 
 <a id="typed-loader"></a>
-### 7.2. `../../src/pipeline/io/loader.py`
+#### `src/pipeline/io/loader.py`
 
 <a id="fn-load-table"></a>
-#### `load_table()`
+##### `load_table()`
 
 `load_table(spec, *, key_columns=None) -> DataFrame`
 
@@ -679,10 +710,10 @@ Messages preserve error types, causes, and notes. Engine-installation guidance c
 - **Notes/errors:** no cross-source FK checks or row filtering. Missing files raise FileNotFoundError; missing columns, parsing, or key failures raise contextual ValueError. A spec does not register files. Raw pandas NA conventions still apply; literals inferred as missing cannot later be recovered by normalization.
 
 <a id="parquet-io"></a>
-### 7.3. `../../src/pipeline/io/parquet_io.py`
+#### `src/pipeline/io/parquet_io.py`
 
 <a id="fn-write-parquet-dataset"></a>
-#### `write_parquet_dataset()`
+##### `write_parquet_dataset()`
 
 `write_parquet_dataset(df, path, schema) -> Path`
 
@@ -693,7 +724,7 @@ Messages preserve error types, causes, and notes. Engine-installation guidance c
 - **Notes/errors:** seconds timestamps are safely converted to milliseconds because Parquet has no seconds timestamp unit; overflow is rejected. Missing engine raises ImportError with installation guidance. Direct calls do not create parents, append extensions, fallback, or replace atomically. Existing files may be overwritten; conversion/filesystem errors propagate.
 
 <a id="fn-read-parquet-dataset"></a>
-#### `read_parquet_dataset()`
+##### `read_parquet_dataset()`
 
 `read_parquet_dataset(path, schema) -> DataFrame`
 
@@ -706,7 +737,7 @@ Messages preserve error types, causes, and notes. Engine-installation guidance c
 Embedded Arrow schema is **inside Parquet**, not a JSON sidecar. The caller still supplies TableSchema to determine the required contract.
 
 <a id="csv-codec"></a>
-### 7.4. `../../src/pipeline/io/csv_codec.py`
+#### `src/pipeline/io/csv_codec.py`
 
 Interim CSV uses a cell-value convention to distinguish missing values from literal text. It is separate from CSV quoting for commas and newlines.
 
@@ -714,7 +745,7 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 - `CSV_ESCAPE_PREFIX = "\\"` escapes text starting with a backslash.
 
 <a id="fn-encode-csv-strings"></a>
-#### `encode_csv_strings()`
+##### `encode_csv_strings()`
 
 `encode_csv_strings(values: Series) -> Series`
 
@@ -725,7 +756,7 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 - **Notes/errors:** object/numeric/list inputs raise TypeError rather than being coerced. No numeric/datetime serialization, key checks, or file I/O.
 
 <a id="fn-decode-csv-strings"></a>
-#### `decode_csv_strings()`
+##### `decode_csv_strings()`
 
 `decode_csv_strings(values: Series) -> Series`
 
@@ -743,10 +774,10 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 | NA, NULL, 01310 | Unchanged | Unchanged |
 
 <a id="csv-types"></a>
-### 7.5. `../../src/pipeline/io/csv_types.py`
+#### `src/pipeline/io/csv_types.py`
 
 <a id="fn-restore-csv-column"></a>
-#### `restore_csv_column()`
+##### `restore_csv_column()`
 
 `restore_csv_column(values: Series, dtype: str) -> Series`
 
@@ -757,10 +788,10 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 - **Notes/errors:** empty/NA/NULL literals do not imply missing data. Invalid arguments raise TypeError; unsupported types, malformed values, or precision loss raise contextual ValueError. No I/O or key validation; CSV floats wider than 64 bits are unsupported.
 
 <a id="csv-io"></a>
-### 7.6. `../../src/pipeline/io/csv_io.py`
+#### `src/pipeline/io/csv_io.py`
 
 <a id="fn-write-csv-dataset"></a>
-#### `write_csv_dataset()`
+##### `write_csv_dataset()`
 
 `write_csv_dataset(df, path, schema) -> Path`
 
@@ -768,10 +799,10 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 - **Inputs:** contract-compliant DataFrame, exact path, non-empty-column schema, and an existing parent.
 - **Returns:** exact file Path.
 - **Behavior:** validate, serialize columns as text, encode, and write strict UTF-8 without an index, with CRLF endings and no suffix-based compression inference. Smaller floats are represented through float64 without extra rounding; datetime text retains precision and applicable offsets.
-- **Notes/errors:** supported families are described in 7.5, not every pandas dtype. No parent creation, extension changes, fallback, or atomic replacement. Direct calls can overwrite or leave partial files on failure; use the orchestrated saver.
+- **Notes/errors:** supported families are described in [CSV types](#csv-types), not every pandas dtype. No parent creation, extension changes, fallback, or atomic replacement. Direct calls can overwrite or leave partial files on failure; use the orchestrated saver.
 
 <a id="fn-read-csv-dataset"></a>
-#### `read_csv_dataset()`
+##### `read_csv_dataset()`
 
 `read_csv_dataset(path, schema) -> DataFrame`
 
@@ -784,10 +815,10 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 `_CSV_FIELD_SIZE_LOCK` is an RLock protecting temporary increases of the global csv.field_size_limit(), restored in finally. It coordinates reads using this helper, not unrelated CSV consumers.
 
 <a id="atomic-io"></a>
-### 7.7. `../../src/pipeline/io/atomic_io.py`
+#### `src/pipeline/io/atomic_io.py`
 
 <a id="fn-write-file-atomically"></a>
-#### `write_file_atomically()`
+##### `write_file_atomically()`
 
 `write_file_atomically(path, writer) -> Path`
 
@@ -799,7 +830,7 @@ Interim CSV uses a cell-value convention to distinguish missing values from lite
 
 Concurrent writers can complete; the last successful replacement determines the destination. Both formats use this helper through save_dataset().
 
-### 7.8. Responsibility matrix
+#### Responsibility matrix
 
 | Function | Create parent | Atomic | Fallback | Result |
 |---|---|---|---|---|
@@ -810,79 +841,12 @@ Concurrent writers can complete; the last successful replacement determines the 
 | write_file_atomically() | No | Yes | No | Destination Path |
 | load_table() | Not explicitly | — | No | Typed source |
 
-Import side effects are described in [2.3](#configuration).
-
-<a id="compatibility"></a>
-## 8. Compatibility interfaces
-
-These interfaces retain active callers/tests. Prefer section 5 for current entry points; the legacy adapter's different policy must not be used to bypass strict validation.
-
-### 8.1. Wrappers in `../../src/pipeline/run_merge.py`
-
-<a id="fn-load-and-prepare"></a>
-#### `_load_and_prepare()`
-
-`_load_and_prepare(spec: TableLoadSpec) -> DataFrame`
-
-- **Purpose:** retain the former typed-loading entry point.
-- **Inputs:** source spec.
-- **Returns:** the DataFrame returned by load_table().
-- **Behavior:** log console messages before/after the shared loader.
-- **Notes/errors:** no separate parser/validator; errors propagate. The underscore indicates an internal helper. Tests still call it; run_pipeline() now loads through the API.
-
-<a id="fn-save-merged-dataset"></a>
-#### `save_merged_dataset()`
-
-`save_merged_dataset(merged_df: DataFrame, output_dir: Path) -> Path`
-
-- **Purpose:** retain the former **full-result** save interface.
-- **Inputs:** full-contract DataFrame and destination directory.
-- **Returns:** actual saved Parquet/CSV Path.
-- **Behavior:** delegate once to save_dataset() using FULL_MERGE_SCHEMA and FULL_DATASET_NAME.
-- **Notes/errors:** shared validation/atomic/fallback/error behavior is preserved. Partial/custom results require the generic saver and their own schema.
-
-### 8.2. `OlistDataMerger` in `../../src/pipeline/merging/merger.py`
-
-<a id="fn-olist-init"></a>
-#### `OlistDataMerger.__init__()`
-
-`__init__(self) -> None`
-
-- **Purpose:** construct the five-source compatibility adapter.
-- **Inputs:** no external configuration.
-- **Returns:** no data; the instance receives expected_columns.
-- **Behavior:** expected_columns references EXPECTED_FINAL_COLUMNS.
-- **Notes/errors:** no loading/joining. Do not modify the shared list to customize a contract; use a separate schema.
-
-<a id="fn-olist-merge-tables"></a>
-#### `OlistDataMerger.merge_tables()`
-
-`merge_tables(self, order_items, orders, customers, products, sellers) -> DataFrame`
-
-- **Purpose:** retain the five-DataFrame interface through the shared executor.
-- **Inputs:** all five source frames, with retained positional/keyword arguments.
-- **Returns:** a copied 25-column full DataFrame, not MergeResult.
-- **Behavior:** build the full preset, normalize/reorder sources, precheck right PK duplicates, then execute with require_match=False.
-- **Notes/errors:** unmatched items remain for legacy caller validation, unlike strict presets. Extra source columns are not silently discarded. Duplicate right PKs raise MergeError for compatibility; other contract failures may raise ValueError. No loading/saving.
-
-<a id="legacy-validator"></a>
-### 8.3. `MergeValidator` in `../../src/pipeline/contracts/validator.py`
-
-<a id="fn-validate-hard-rules"></a>
-#### `MergeValidator.validate_hard_rules()`
-
-`validate_hard_rules(merged_df, base_order_items, orders, products, sellers) -> None`
-
-- **Purpose:** retain legacy full-result hard checks.
-- **Inputs:** full output and four sources; a static method callable through class or instance.
-- **Returns:** None when checks pass, with logger output.
-- **Behavior:** check item row count, PK, exact columns/order, required IDs, timestamp/ZIP families, suffixes, and orders/products/sellers orphans through shared key helpers.
-- **Notes/errors:** no customer source argument, so it does not replace strict orders→customers validation. Its dtype checks are not equivalent to the precise full contract. Violations raise errors. run_pipeline() no longer calls this class; run_soft_checks() is absent.
+Import side effects are described in [Configuration](#configuration).
 
 <a id="artifacts"></a>
-## 9. Artifacts and data lifecycle
+### Artifacts and data lifecycle
 
-### 9.1. Naming
+#### Naming
 
 [Appendix B](#output-names) lists all 26 standard names. Registry entries describe outputs that **can be saved**, not files confirmed to exist.
 
@@ -891,7 +855,7 @@ These interfaces retain active callers/tests. Prefer section 5 for current entry
 - Actual file: `<output_dir>/<dataset_name>.parquet` or .csv. The full wrapper uses INTERIM_DIR; the generic saver accepts the caller's directory.
 - Custom: the caller chooses a name and retains/redeclares the matching schema. Unregistered names have no inferred registry schema.
 
-### 9.2. Lifecycle and location
+#### Lifecycle and location
 
 | Artifact | Location | Creation / purpose |
 |---|---|---|
@@ -907,7 +871,7 @@ These interfaces retain active callers/tests. Prefer section 5 for current entry
 
 Processed data belongs in data/processed/. Shared figures/tables/reports/docs paths exist, but merge does not populate them. The workflow does not create schema JSON, latest-run manifests, run history, persistent log files, or Markdown reports.
 
-### 9.3. Dependencies and Git
+#### Dependencies and Git
 
 requirements.txt pins pandas 3.0.6, NumPy 2.5.3, PyArrow 19.0.0, and pytest 8.3.4. Verification used Python 3.13.5. This describes the verified environment, not identical behavior across every version.
 
@@ -921,28 +885,25 @@ requirements.txt pins pandas 3.0.6, NumPy 2.5.3, PyArrow 19.0.0, and pytest 8.3.
 
 .gitignore excludes raw/interim/processed contents with .gitkeep exceptions, bytecode, virtual environments, .env, notebook checkpoints, IDE files, and *.tmp/*.temp. Generated datasets need not be committed as run records. Not every tool cache necessarily has its own explicit ignore pattern.
 
+## 6. Validation, tests and extension
+
 <a id="testing"></a>
-## 10. Testing
+### Testing
 
-### 10.1. Suite size and scope
+#### Suite size and scope
 
-There are **78 test functions**, expanded by parametrization into **308 cases**, plus **10 fixtures** and **five top-level test helpers**. Local callbacks, mocks, and lambdas are not counted as separate reusable APIs.
+The merge tests cover source contracts, join planning and execution, storage, reporting, and the full pipeline. Real-data tests may skip when their source files or Parquet engine are unavailable.
 
-All 308 cases passed with the reference raw data and available engine. Other environments may skip cases when raw files or PyArrow are missing; inspect the actual summary. Passing counts do not imply exhaustive coverage of every possible input.
+| Test file | Responsibility |
+|---|---|
+| [Contracts](#tests-contracts) | Schemas, normalization, keys and relationships |
+| [Joins](#tests-joins) | Join modes, cardinality, projections and invalid keys |
+| [Presets](#tests-presets) | Standard combinations, bridges, loader and schema registry |
+| [Storage](#tests-storage) | Parquet and CSV round trips, fallback and atomic writes |
+| [Reporting](#tests-reporting) | Diagnostic tables and recorded validation |
+| [Pipeline](#tests-pipeline) | Full workflow, error paths and compatibility |
 
-| Test file | Functions | Parametrized cases | Responsibility |
-|---|---:|---:|---|
-| [test_merge_contracts.py](#tests-contracts) | 12 | 45 | Declarations, normalization, PK/FK, constraints, derivation |
-| [test_merge_joins.py](#tests-joins) | 9 | 80 | Join modes, precision, invalid keys, empty sides, projection, preflight |
-| [test_merge_presets.py](#tests-presets) | 10 | 79 | 26 presets, raw/memory API, registry, typed loader, custom reload |
-| [test_merge_storage.py](#tests-storage) | 24 | 74 | Round-trips, malformed files, fallback, atomic writes, missing engine |
-| [test_merge_reporting.py](#tests-reporting) | 4 | 11 | Producer modes, stable tables, recorded/current state, large counts |
-| [test_merge_pipeline.py](#tests-pipeline) | 19 | 19 | Compatibility, full pipeline/baseline, empty/missing-customer/failure paths |
-| **Total** | **78** | **308** | Individual entries in [Appendix A](#test-reference) |
-
-Six shared fixtures are defined in tests/conftest.py. Four specialized fixtures live in the preset/storage/reporting test modules and are scoped to their own modules' tests.
-
-### 10.2. Independent references and verified behavior
+### Independent references and verified behavior
 
 - **26 synthetic presets:** compare against plain pandas joins and verify bridges/base/grain/key/order, then round-trip both CSV and Parquet.
 - **26 real-data presets:** compare all values/dtypes/row order against reference joins; check rows/orders and the full schema.
@@ -952,31 +913,31 @@ Six shared fixtures are defined in tests/conftest.py. Four specialized fixtures 
 
 Some compatibility tests exercise pandas directly, such as datetime parsing and ZIP reading. Those tests alone do not verify typed loading; dedicated loader/API/storage tests cover those behaviors.
 
-### 10.3. Running and selecting tests
+#### Running and selecting tests
 
 From the repository root, using the project Python environment:
 
 ```powershell
-python -m pytest tests -q
+python -m pytest tests/merge -q
 ```
 
 To omit the **27 real-data cases** while retaining synthetic pipeline tests:
 
 ```powershell
-python -m pytest tests -q -k "not test_real_presets_match_independent_reference and not test_integration_pipeline_on_real_files"
+python -m pytest tests/merge -q -k "not test_real_presets_match_independent_reference and not test_integration_pipeline_on_real_files"
 ```
 
-This selects **281 cases** before environment-dependent skips. To run a single group:
+To run a single group:
 
 ```powershell
-python -m pytest tests/test_merge_storage.py -q
+python -m pytest tests/merge/test_merge_storage.py -q
 ```
 
-pytest.ini sets pythonpath=. and registers integration. There are 32 integration-marked cases: 26 real references, one real full pipeline, and five synthetic pipeline cases. Consequently, `-m "not integration"` selects 276 cases and differs from the selector above. The marker does not mean every case requires large raw files.
+pytest.ini sets pythonpath=. and registers the integration marker. Some integration cases use synthetic data, so excluding that marker is not equivalent to excluding only the real-data cases.
 
 Real-data tests redirect output to temporary directories rather than overwriting actual interim data. REAL_FILES_PRESENT is computed at pipeline-test import; real_sources checks inputs when requested. Some Parquet cases use importorskip; synthetic preset tests verify CSV before checking engine availability.
 
-### 10.4. Patch the consuming binding
+#### Patch the consuming binding
 
 With `from module import value`, the importing module retains its own binding. Patching the original definition after import may not change the consuming module.
 
@@ -992,9 +953,9 @@ With `from module import value`, the importing module retains its own binding. P
 The pipeline fixture patches the three paths and restores them through monkeypatch. Changing src.paths.INTERIM_DIR after imports does not update every imported binding.
 
 <a id="maintenance"></a>
-## 11. Limits, troubleshooting, and extension
+### Limits, troubleshooting, and extension
 
-### 11.1. Implementation limits
+#### Implementation limits
 
 | Topic | Constraint |
 |---|---|
@@ -1008,10 +969,10 @@ The pipeline fixture patches the three paths and restores them through monkeypat
 | Concurrency/durability | Atomic per-file replacement without cross-process locks, multi-format transactions, or fsync-based power-loss guarantees |
 | Registry lifetime | INTERIM_DATASETS is built at import. A fresh session avoids stale bindings after configuration changes; registry entries do not select the newest file |
 
-Raw-inferred NA values or lost leading zeros cannot be reconstructed by assumption. Reports do not certify data modified afterward. See [3.4](#downstream-notes) for grain and downstream business-rule boundaries.
+Raw-inferred NA values or lost leading zeros cannot be reconstructed by assumption. Reports do not certify data modified afterward. See [Downstream notes](#downstream-notes) for grain and downstream business-rule boundaries.
 
 <a id="troubleshooting"></a>
-### 11.2. Failure location guide
+#### Failure location guide
 
 | Symptom | Inspect first |
 |---|---|
@@ -1028,7 +989,7 @@ Raw-inferred NA values or lost leading zeros cannot be reconstructed by assumpti
 | Report differs from modified data | Recorded metrics versus current shape/dtypes |
 | Notebook baseline failure | Cell 3/reference inputs; cell 1 saved earlier |
 
-### 11.3. Extension points
+#### Extension points
 
 | Requirement | Implementation location |
 |---|---|
@@ -1043,7 +1004,7 @@ Raw-inferred NA values or lost leading zeros cannot be reconstructed by assumpti
 
 Run affected tests and the complete suite as appropriate. Verify nonmutation, unmasked errors, exact values, failures before output creation, temporary-file cleanup, and dtype restoration. Keep cleanup limited to affected code and review it separately.
 
-### 11.4. Documentation maintenance
+#### Documentation maintenance
 
 Code and schema declarations are the source of truth. Update function references when interfaces change, and the coverage matrix/appendix when tests change. Maintain documentation explicitly rather than adding notebook cells that regenerate it. Keep this reference and the [user guide](User_Guide.md) aligned; neither document is a machine-specific run log or output manifest.
 
@@ -1069,7 +1030,7 @@ All six use function scope, providing fresh inputs per test. They are supplied b
 | `synthetic_customers()` | None → two customers | ZIP codes 01310/04571 |
 | `synthetic_products()` | None → two products | Category and floating physical attributes |
 | `synthetic_sellers()` | None → two sellers | Text ZIP codes |
-| `synthetic_pipeline_dirs()` | tmp_path, monkeypatch, F5 → raw/interim Path dictionary | Write five UTF-8 raw fixtures, leave interim absent, patch the three paths from 10.4 |
+| `synthetic_pipeline_dirs()` | tmp_path, monkeypatch, F5 → raw/interim Path dictionary | Write five UTF-8 raw fixtures, leave interim absent, patch the three paths at their consuming bindings |
 
 F5 starts with pandas-inferred dtypes; the adapter/typed loader normalizes them. Initial fixture timestamps/string columns are not assumed to be the exact canonical dtypes.
 
