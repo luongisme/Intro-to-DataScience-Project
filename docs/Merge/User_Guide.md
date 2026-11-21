@@ -1,6 +1,6 @@
 # Merge User Guide
 
-Use this guide to merge Olist tables, inspect join results and reload saved datasets. See the [notebook](../../notebooks/00_data_merging.ipynb), [Technical Reference](Technical_Reference.md) and [Merge Report](../../reports/Merge/Merge_Report.md).
+Use this guide to merge Olist tables, inspect join results and reload saved datasets. See the [notebook](../../notebooks/00_data_merging.ipynb), [Technical Reference](Technical_Reference.md) and [Merge Report](../../reports/Merge_Report.md).
 
 ## Contents
 

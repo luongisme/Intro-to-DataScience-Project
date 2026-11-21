@@ -1,6 +1,6 @@
 # Cleaning Technical Reference
 
-This reference describes the cleaning workflow, data contracts, interfaces, rules and verification. See the [notebook](../../notebooks/02_data_cleaning.ipynb), [User Guide](User_Guide.md) and [Cleaning Report](../../reports/Cleaning/Cleaning_Report.md).
+This reference describes the cleaning workflow, data contracts, interfaces, rules and verification. See the [notebook](../../notebooks/02_data_cleaning.ipynb), [User Guide](User_Guide.md) and [Cleaning Report](../../reports/Cleaning_Report.md).
 
 ## Contents
 
@@ -281,8 +281,8 @@ The shared `load_data(name, stage="raw", **kwargs) -> DataFrame` dispatches proc
 | Full source | `data/interim/merged_order_items.parquet` or `.csv`; produced by merge |
 | Final clean data | `data/processed/cleaned_order_items.parquet` or `.csv`; explicit save only |
 | Intermediate flags and diagnostics | In-memory return values; not persisted as metadata sidecars |
-| Report | `reports/Cleaning/Cleaning_Report.md`; separately maintained |
-| Report images | `reports/figures/Cleaning/`; exported separately |
+| Report | `reports/Cleaning_Report.md`; separately maintained |
+| Report images | `outputs/figures/Cleaning/`; exported separately |
 | Usage and technical docs | `docs/Cleaning/`; separately maintained |
 
 Reads default to Parquet with CSV fallback. Explicit CSV announces the selection and reads CSV directly, propagating its failure. Writes attempt Parquet first then CSV; failure of both attempts reports both causes. The successful saver path determines which format to read for a roundtrip; default reads do not select by modification time or metadata. Files of the other format may still exist.

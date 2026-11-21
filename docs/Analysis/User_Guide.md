@@ -1,6 +1,6 @@
 # Analysis User Guide
 
-This guide explains how to run the delivery analysis, create its tables and figures, and interpret their scope. See the [Analysis notebook](../../notebooks/03_analysis.ipynb) for the full workflow. Function contracts and calculations are documented in the [Technical Reference](Technical_Reference.md). Results for the reference dataset are presented in the [Analysis Report](../../reports/Analysis/Analysis_Report.md).
+This guide explains how to run the delivery analysis, create its tables and figures, and interpret their scope. See the [Analysis notebook](../../notebooks/03_analysis.ipynb) for the full workflow. Function contracts and calculations are documented in the [Technical Reference](Technical_Reference.md). Results for the reference dataset are presented in the [Analysis Report](../../reports/Analysis_Report.md).
 
 ## Contents
 
@@ -21,7 +21,7 @@ This guide explains how to run the delivery analysis, create its tables and figu
 | Reference dataset | 108,571 items × 25 columns, belonging to 95,075 delivered orders |
 | Additional input | `merged_order_items` in `data/interim` for the before-and-after cleaning comparison |
 | Notebook | [03_analysis.ipynb](../../notebooks/03_analysis.ipynb) |
-| Outputs | Tables and figures in memory; saved report figures in [reports/figures/Analysis](../../reports/figures/Analysis/) |
+| Outputs | Tables and figures in memory; saved report figures in [outputs/figures/Analysis](../../outputs/figures/Analysis/) |
 
 Each eligible order is counted once. An order is late when its delivery date is after its estimated delivery date. Approval time anchors the observed comparisons. It does not identify a scheduled delivery slot or the causal effect of changing approval time. Reference counts describe the current dataset and do not constrain other valid inputs.
 

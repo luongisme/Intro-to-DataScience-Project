@@ -1,6 +1,6 @@
 # Analysis Technical Reference
 
-This reference describes the delivery analysis architecture, data contracts, functions and calculations. The [Analysis notebook](../../notebooks/03_analysis.ipynb) executes the workflow. The [User Guide](User_Guide.md) provides runnable examples, and the [Analysis Report](../../reports/Analysis/Analysis_Report.md) presents results for the reference dataset.
+This reference describes the delivery analysis architecture, data contracts, functions and calculations. The [Analysis notebook](../../notebooks/03_analysis.ipynb) executes the workflow. The [User Guide](User_Guide.md) provides runnable examples, and the [Analysis Report](../../reports/Analysis_Report.md) presents results for the reference dataset.
 
 Paths below are relative to the repository root. The notebook calls the functions and displays results in memory. Documentation and report figures are maintained separately.
 
@@ -34,7 +34,7 @@ src/
     ├── investigation_plots.py     # Detailed analysis figures
     └── presentation.py            # Display formatting
 tests/analysis/                    # Analysis tests
-reports/figures/Analysis/          # Saved report figures
+outputs/figures/Analysis/          # Saved report figures
 ```
 
 Functions are imported from their defining modules. The notebook-local `find_project_root` locates the directory containing `src` and `requirements.txt`, adds it to the import path, and raises `FileNotFoundError` if none is found. It does not change the working directory.
@@ -266,7 +266,7 @@ Runtime tables and figures remain in memory. The saved report figures and separa
 | Main input | `data/processed/cleaned_order_items`; loader prefers Parquet then CSV, with direct CSV selection available |
 | Cleaning comparison | `data/interim/merged_order_items` |
 | Runtime tables and figures | In-memory DataFrames, Stylers and Figures |
-| Report figures | `reports/figures/Analysis/figure_01_*.png` through `figure_27_*.png` |
+| Report figures | `outputs/figures/Analysis/figure_01_*.png` through `figure_27_*.png` |
 | Documentation | User Guide, Technical Reference and Report are authored separately |
 
 <a id="tests"></a>

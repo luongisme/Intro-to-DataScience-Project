@@ -1,6 +1,6 @@
 # EDA Technical Reference
 
-This reference describes the pre-cleaning inspection contracts, calculations and interfaces. See the [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb), [User Guide](User_Guide.md) and [Report](../../reports/EDA/EDA_Report.md).
+This reference describes the pre-cleaning inspection contracts, calculations and interfaces. See the [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb), [User Guide](User_Guide.md) and [Report](../../reports/EDA_Report.md).
 
 ## Contents
 
@@ -236,8 +236,8 @@ The data contracts in section 2 define denominators and null conventions. Quanti
 |---|---|
 | `data/interim/merged_order_items.parquet` or `.csv` | Merge output read by EDA |
 | Notebook tables and figures | EDA execution; retained in the kernel/output until cleared |
-| `reports/EDA/EDA_Report.md` | Separately maintained narrative and selected observations |
-| `reports/figures/EDA/` | Images referenced by the report, exported separately |
+| `reports/EDA_Report.md` | Separately maintained narrative and selected observations |
+| `outputs/figures/EDA/` | Images referenced by the report, exported separately |
 | `docs/EDA/User_Guide.md`, `Technical_Reference.md` | Maintained usage and implementation documentation |
 
 The EDA notebook does not export the report or report images. Re-running it does not refresh these maintained artifacts.

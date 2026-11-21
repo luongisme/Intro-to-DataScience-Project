@@ -1,6 +1,6 @@
 # Exploratory Data Analysis Report
 
-This report presents the pre-cleaning profile of the merged item table. See the [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb), [User Guide](../../docs/EDA/User_Guide.md) and [Technical Reference](../../docs/EDA/Technical_Reference.md).
+This report presents the pre-cleaning profile of the merged item table. See the [EDA notebook](../notebooks/01_exploratory_data_analysis.ipynb), [User Guide](../docs/EDA/User_Guide.md) and [Technical Reference](../docs/EDA/Technical_Reference.md).
 
 ## Contents
 
@@ -55,17 +55,17 @@ All six numeric measurements have **0 negative values** and **0 ±infinity value
 
 Each figure contains a full-range histogram, a P01–P99 display window and a full-range boxplot. The window only restricts the plotted range; the figure shows counts outside the window.
 
-![Figure 5 — Price distribution at item grain](../figures/EDA/figure_01.png)
+![Figure 5 — Price distribution at item grain](../outputs/figures/EDA/figure_01.png)
 
-![Figure 6 — Freight distribution at item grain](../figures/EDA/figure_02.png)
+![Figure 6 — Freight distribution at item grain](../outputs/figures/EDA/figure_02.png)
 
-![Figure 7 — Weight distribution at product grain](../figures/EDA/figure_03.png)
+![Figure 7 — Weight distribution at product grain](../outputs/figures/EDA/figure_03.png)
 
-![Figure 8 — Length distribution at product grain](../figures/EDA/figure_04.png)
+![Figure 8 — Length distribution at product grain](../outputs/figures/EDA/figure_04.png)
 
-![Figure 9 — Height distribution at product grain](../figures/EDA/figure_05.png)
+![Figure 9 — Height distribution at product grain](../outputs/figures/EDA/figure_05.png)
 
-![Figure 10 — Width distribution at product grain](../figures/EDA/figure_06.png)
+![Figure 10 — Width distribution at product grain](../outputs/figures/EDA/figure_06.png)
 
 <a id="321-zero-values"></a>
 #### Zero values
@@ -105,14 +105,14 @@ The categorical profiles locate the observations across order statuses, products
 
 There are **7 statuses**. Delivered accounts for **96,478 / 98,666 orders (97.7824%)**. The other six statuses total **2,188 orders**: shipped 1,106; canceled 461; invoiced 312; processing 301; unavailable 6; approved 2. Status is neither null nor blank.
 
-![Figure 11 — Order-status frequencies at order grain](../figures/EDA/figure_07.png)
+![Figure 11 — Order-status frequencies at order grain](../outputs/figures/EDA/figure_07.png)
 
 <a id="332-product-categories"></a>
 #### Product categories
 
 There are **73 non-null categories**. The most frequent category is `cama_mesa_banho`: **3,029 / 32,951 products (9.1924%)**, followed by `esporte_lazer` (2,867) and `moveis_decoracao` (2,657). **610 products missing category** are retained as a Missing group.
 
-![Figure 12 — Product categories at product grain; top 15 plus Other and Missing](../figures/EDA/figure_11.png)
+![Figure 12 — Product categories at product grain; top 15 plus Other and Missing](../outputs/figures/EDA/figure_11.png)
 
 <a id="333-customer-and-seller-geography"></a>
 #### Customer and seller geography
@@ -121,17 +121,17 @@ Customers have **27 states**, **4,110 cities** and **14,976 distinct ZIP prefixe
 
 State SP accounts for **41,375 / 98,666 customer records (41.9344%)** and **1,849 / 3,095 sellers (59.7415%)**. The exact city string `sao paulo` occurs in **15,402 customer records** and **694 seller records**; variants with different whitespace remain separate values.
 
-![Figure 13 — Customer state at customer-record grain](../figures/EDA/figure_10.png)
+![Figure 13 — Customer state at customer-record grain](../outputs/figures/EDA/figure_10.png)
 
-![Figure 14 — Seller state at seller grain](../figures/EDA/figure_14.png)
+![Figure 14 — Seller state at seller grain](../outputs/figures/EDA/figure_14.png)
 
-![Figure 15 — Customer city; top 15 plus Other and Missing](../figures/EDA/figure_09.png)
+![Figure 15 — Customer city; top 15 plus Other and Missing](../outputs/figures/EDA/figure_09.png)
 
-![Figure 16 — Seller city; top 15 plus Other and Missing](../figures/EDA/figure_13.png)
+![Figure 16 — Seller city; top 15 plus Other and Missing](../outputs/figures/EDA/figure_13.png)
 
-![Figure 17 — Customer ZIP prefix; top 15 plus Other and Missing](../figures/EDA/figure_08.png)
+![Figure 17 — Customer ZIP prefix; top 15 plus Other and Missing](../outputs/figures/EDA/figure_08.png)
 
-![Figure 18 — Seller ZIP prefix; top 15 plus Other and Missing](../figures/EDA/figure_12.png)
+![Figure 18 — Seller ZIP prefix; top 15 plus Other and Missing](../outputs/figures/EDA/figure_12.png)
 
 The city/ZIP charts limit the displayed labels. Other combines observations in values outside the top 15; it is not the number of distinct remaining cities or ZIP prefixes.
 
@@ -162,17 +162,17 @@ Each figure contains four panels: month, top 15 dates plus Other/Missing, weekda
 
 Purchase orders peak in **November 2017: 7,451 orders**. Counts at the ends of the observed range include **3 in September 2016**, **308 in October 2016**, **1 in December 2016** and **1 in September 2018**; there were no purchases in November 2016. The busiest purchase hour is **16:00: 6,628 orders**. The most frequent approval hour is **02:00: 7,002 orders**.
 
-![Figure 19 — Purchase at order grain](../figures/EDA/figure_16.png)
+![Figure 19 — Purchase at order grain](../outputs/figures/EDA/figure_16.png)
 
-![Figure 20 — Approved at order grain](../figures/EDA/figure_17.png)
+![Figure 20 — Approved at order grain](../outputs/figures/EDA/figure_17.png)
 
-![Figure 21 — Carrier Handoff at order grain](../figures/EDA/figure_18.png)
+![Figure 21 — Carrier Handoff at order grain](../outputs/figures/EDA/figure_18.png)
 
-![Figure 22 — Customer Delivery at order grain](../figures/EDA/figure_19.png)
+![Figure 22 — Customer Delivery at order grain](../outputs/figures/EDA/figure_19.png)
 
-![Figure 23 — Estimated Delivery at order grain; every recorded time is midnight](../figures/EDA/figure_20.png)
+![Figure 23 — Estimated Delivery at order grain; every recorded time is midnight](../outputs/figures/EDA/figure_20.png)
 
-![Figure 24 — Shipping Limit at item grain](../figures/EDA/figure_15.png)
+![Figure 24 — Shipping Limit at item grain](../outputs/figures/EDA/figure_15.png)
 
 <a id="35-missing-values-and-co-occurring-patterns"></a>
 ### Missing values and co-occurring patterns
@@ -211,14 +211,14 @@ The four core timestamps are Purchase, Approved, Carrier Handoff and Customer De
 
 Among the **1,009 orders missing Carrier Handoff**, **1,008 also lack Customer Delivery (99.9009%)**. Conversely, **1,008 / 2,190 orders missing Customer Delivery also lack Carrier Handoff (46.0274%)**. No order missing Approved also lacks Carrier Handoff or Customer Delivery in this dataset.
 
-![Figure 1 — Co-missing timestamps at order grain; rows are the missing column and columns are a potentially co-missing field](../figures/EDA/figure_22.png)
+![Figure 1 — Co-missing timestamps at order grain; rows are the missing column and columns are a potentially co-missing field](../outputs/figures/EDA/figure_22.png)
 
 <a id="353-timestamps-by-status-and-within-delivered-orders"></a>
 #### Timestamps by status and within delivered orders
 
 `shipped`, `invoiced`, `processing`, `approved` and `unavailable` each have **100% of orders missing at least one core timestamp**, a total of **1,727 orders**. The `canceled` group has **455 / 461 orders (98.6985%)** missing a core timestamp. The `delivered` group has **23 / 96,478 orders (0.0238%)** missing a core timestamp.
 
-![Figure 2 — Timestamp missingness within each status; denominator is all orders in that status](../figures/EDA/figure_24.png)
+![Figure 2 — Timestamp missingness within each status; denominator is all orders in that status](../outputs/figures/EDA/figure_24.png)
 
 The 23 delivered orders missing a core timestamp have these patterns:
 
@@ -241,9 +241,9 @@ Two products are missing physical measurements; both lack **all four** weight/le
 
 Thus, category is missing for **1 / 2 products (50%)** among products missing physical measurements, but for **17 / 18 items (94.4444%)** at item grain. Of all **610 products missing category**, **609 still have all four physical measurements**. Products missing category occur in **1,603 items across 1,451 orders**.
 
-![Figure 3 — Category and physical-measurement co-missingness at product grain](../figures/EDA/figure_23.png)
+![Figure 3 — Category and physical-measurement co-missingness at product grain](../outputs/figures/EDA/figure_23.png)
 
-![Figure 4 — Co-missingness at item grain in the full table](../figures/EDA/figure_21.png)
+![Figure 4 — Co-missingness at item grain in the full table](../outputs/figures/EDA/figure_21.png)
 
 In both heatmaps, rows determine the denominator: records missing the row's field. The cells do not use all items/products as the denominator for each pair.
 
@@ -288,9 +288,9 @@ Among **1,359 orders with Carrier before Approved**, **566 were purchased in Jul
 
 The following charts count within the flagged cohorts. They do not show the proportion of all purchases in each month that were flagged.
 
-![Figure 25 — Purchase months among 1,359 Carrier-before-Approved orders](../figures/EDA/figure_25.png)
+![Figure 25 — Purchase months among 1,359 Carrier-before-Approved orders](../outputs/figures/EDA/figure_25.png)
 
-![Figure 26 — Purchase months among 23 Customer-Delivery-before-Carrier orders](../figures/EDA/figure_26.png)
+![Figure 26 — Purchase months among 23 Customer-Delivery-before-Carrier orders](../outputs/figures/EDA/figure_26.png)
 
 <a id="364-shipping-deadlines-beyond-observed-purchase-years"></a>
 #### Shipping deadlines beyond observed purchase years
@@ -354,4 +354,4 @@ There are **100,010 order–seller groups**. **Zero groups have multiple distinc
 
 The item key and source-entity attributes support source-grain inspection. Observations identify incomplete timestamps and reversals at order grain, nonpositive weight at product grain, deadlines beyond the observed purchase years, and repeated spaces in seller cities. Missing product attributes and unmatched join keys describe different conditions. The IQR identifies distribution tails without establishing a business validity threshold; zero freight is an observed value.
 
-Cleaning applies its selected rules to the original full merged table. The [Cleaning Report](../Cleaning/Cleaning_Report.md) describes the resulting exclusions and retained data. Counts here describe the reference input and its observed entities. Overlapping diagnostic groups cannot be added to calculate distinct affected orders.
+Cleaning applies its selected rules to the original full merged table. The [Cleaning Report](Cleaning_Report.md) describes the resulting exclusions and retained data. Counts here describe the reference input and its observed entities. Overlapping diagnostic groups cannot be added to calculate distinct affected orders.

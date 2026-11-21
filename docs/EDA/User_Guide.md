@@ -1,6 +1,6 @@
 # EDA User Guide
 
-This guide covers running pre-cleaning inspections on the full merged dataset and reading their tables and figures. It assumes the repository and project environment are already available. The [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb) contains the complete workflow. For function contracts and dependencies, see the [EDA Technical Reference](Technical_Reference.md). Observed results are documented separately in the [EDA Report](../../reports/EDA/EDA_Report.md).
+This guide covers running pre-cleaning inspections on the full merged dataset and reading their tables and figures. It assumes the repository and project environment are already available. The [EDA notebook](../../notebooks/01_exploratory_data_analysis.ipynb) contains the complete workflow. For function contracts and dependencies, see the [EDA Technical Reference](Technical_Reference.md). Observed results are documented separately in the [EDA Report](../../reports/EDA_Report.md).
 
 ## Contents
 

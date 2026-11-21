@@ -1,6 +1,6 @@
 # Merge Technical Reference
 
-This reference describes merge interfaces, contracts and storage behavior. See the [notebook](../../notebooks/00_data_merging.ipynb), [User Guide](User_Guide.md) and [Merge Report](../../reports/Merge/Merge_Report.md).
+This reference describes merge interfaces, contracts and storage behavior. See the [notebook](../../notebooks/00_data_merging.ipynb), [User Guide](User_Guide.md) and [Merge Report](../../reports/Merge_Report.md).
 
 ## Contents
 

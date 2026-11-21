@@ -1,6 +1,6 @@
 # Cleaning User Guide
 
-This guide shows how to inspect, clean, save and verify the merged order-item dataset. See the [notebook](../../notebooks/02_data_cleaning.ipynb), [Technical Reference](Technical_Reference.md) and [Cleaning Report](../../reports/Cleaning/Cleaning_Report.md).
+This guide shows how to inspect, clean, save and verify the merged order-item dataset. See the [notebook](../../notebooks/02_data_cleaning.ipynb), [Technical Reference](Technical_Reference.md) and [Cleaning Report](../../reports/Cleaning_Report.md).
 
 ## Contents
 

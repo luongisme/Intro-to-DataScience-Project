@@ -1,6 +1,6 @@
 # Merge Report
 
-This report describes the full item-level merge of five Olist sources. See the [notebook](../../notebooks/00_data_merging.ipynb), [User Guide](../../docs/Merge/User_Guide.md) and [Technical Reference](../../docs/Merge/Technical_Reference.md).
+This report describes the full item-level merge of five Olist sources. See the [notebook](../notebooks/00_data_merging.ipynb), [User Guide](../docs/Merge/User_Guide.md) and [Technical Reference](../docs/Merge/Technical_Reference.md).
 
 ## Contents
 
