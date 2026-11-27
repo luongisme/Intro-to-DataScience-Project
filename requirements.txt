@@ -15,3 +15,7 @@ pyarrow==19.0.0
 
 # --- Testing Framework ---
 pytest==8.3.4
+
+# --- Machine Learning ---
+scikit-learn==1.9.1
+xgboost==3.4.1
