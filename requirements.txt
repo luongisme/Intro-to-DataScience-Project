@@ -15,3 +15,6 @@ pyarrow==19.0.0
 
 # --- Testing Framework ---
 pytest==8.3.4
+
+# --- Machine Learning ---
+sklearn==1.0.0
