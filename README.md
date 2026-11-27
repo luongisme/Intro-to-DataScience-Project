@@ -83,8 +83,6 @@ python -m pytest -q
 
 **Verification status:** Reference descriptive results are documented, but independent end-to-end reproduction of all six notebooks has **not** been confirmed. Notebook `04` assumes SP → RJ is the leading state pair for the reference data; notebook `05` also contains dataset-specific assertions. Review those checks when using different inputs.
 
-Reference repository revision: [`d6c7458`](https://github.com/luongisme/Olist-Delivery-Performance/commit/d6c7458cacb065c466f143eadf5751f77f1a4805).
-
 ## Documentation and data use
 
 Detailed procedures are available in the [Merge](docs/Merge/User_Guide.md), [EDA](docs/EDA/User_Guide.md), [Cleaning](docs/Cleaning/User_Guide.md), and [Analysis](docs/Analysis/User_Guide.md) user guides. Implementation details for visualization and modeling are currently in notebooks `04` and `05`.
