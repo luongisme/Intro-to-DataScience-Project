@@ -17,4 +17,5 @@ pyarrow==19.0.0
 pytest==8.3.4
 
 # --- Machine Learning ---
-sklearn==1.0.0
+scikit-learn==1.9.1
+xgboost==3.4.1
